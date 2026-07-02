@@ -5,21 +5,25 @@ import os
 from datetime import datetime
 from src.vllm_client import get_vllm_client, MODEL_NAME
 from src.agent.prompts import SYSTEM_PROMPT, AVAILABLE_TOOLS
-from src.skills.rdkit_skills import calculate_molecular_properties, search_substructure, calculate_molecular_similarity, resolve_name_to_smiles
+from src.skills.rdkit_skills import calculate_molecular_properties, search_substructure, calculate_molecular_similarity, resolve_name_to_smiles, generate_molecule_image, fetch_chemical_safety_data
 from src.skills.file_skills import read_file, write_file
 
 client = get_vllm_client()
 
-LOG_FILE_PATH = "agent_execution_logs.jsonl"
+LOG_FILE_PATH = os.path.join("logs", "agent_execution_logs.jsonl")
 
 def write_jsonl_log(event_type: str, data: dict):
-    """Helper function to write structured logs into a JSONL file."""
+    """Helper function to write structured logs into a directory-safe JSONL file."""
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "event_type": event_type,
         **data
     }
     try:
+        parent_dir = os.path.dirname(LOG_FILE_PATH)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+            
         with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
     except Exception as e:
@@ -34,7 +38,6 @@ def run_chemistry_agent(user_query: str):
         {"role": "user", "content": user_query}
     ]
     
-    # Oturum bazlı akıllı araç zincirleme hafızası (Stateful Pipeline Memory)
     session_memory = {
         "last_resolved_smiles": None,
         "last_resolved_name": None
@@ -139,30 +142,25 @@ def run_chemistry_agent(user_query: str):
             function_args = tool_call["arguments"]
             tool_result = {"error": "Unknown function"}
             
-            # --- ARCHITECTURAL PROXY: AKILLI DURUM VE ZİNCİRLEME İYİLEŞTİRME SİSTEMİ ---
-            # Eğer model bir kimyasal özellik hesaplama çağrısı yapıyorsa ve hafızamızda doğrulanmış bir SMILES varsa:
+            # --- ADVANCED PROXY LAYER FOR STATEFUL ENFORCEMENT ---
             if "smiles" in function_args and session_memory["last_resolved_smiles"]:
                 model_smiles = function_args["smiles"]
                 exact_smiles = session_memory["last_resolved_smiles"]
-                
-                # Model kopyalama esnasında Attention Glitch yaşayıp string'i eksik veya kırık yazdıysa (yarı yarıya uyuşma kontrolü)
                 if model_smiles != exact_smiles and (exact_smiles[:15] == model_smiles[:15] or len(model_smiles) > len(exact_smiles) * 0.7):
-                    print(f"[Core Architecture Proxy] Attention Glitch detected! Auto-healing and injecting the exact verified SMILES from session memory.")
+                    print(f"[Core proxy] Auto-healing and injecting the correct verified SMILES string.")
                     function_args["smiles"] = exact_smiles
             
-            # Benzer düzeltmeyi smiles1 ve smiles2 parametreleri gerektiren similarity fonksiyonu için de yapıyoruz
             if "smiles1" in function_args and session_memory["last_resolved_smiles"]:
                 if function_args["smiles1"] != session_memory["last_resolved_smiles"] and session_memory["last_resolved_smiles"][:15] == function_args["smiles1"][:15]:
                     function_args["smiles1"] = session_memory["last_resolved_smiles"]
 
-            # --- DYNAMIC ROUTING ---
+            # --- ROUTING LOGIC EXECUTION ---
             if function_name == "resolve_name_to_smiles":
                 molecule_name = function_args.get("molecule_name")
                 print(f"[PubChem Tool] Resolving molecule name to SMILES for: '{molecule_name}'")
                 tool_result = resolve_name_to_smiles(molecule_name)
                 print(f"[PubChem Tool] Execution Result -> {json.dumps(tool_result)}")
                 
-                # Başarılı aramayı hemen hafızaya kaydet (Bir sonraki adıma paslamak için)
                 if "smiles" in tool_result:
                     session_memory["last_resolved_smiles"] = tool_result["smiles"]
                     session_memory["last_resolved_name"] = molecule_name
@@ -173,6 +171,19 @@ def run_chemistry_agent(user_query: str):
                 tool_result = calculate_molecular_properties(target_smiles)
                 print(f"[RDKit Tool] Execution Result -> {json.dumps(tool_result)}")
                 
+            elif function_name == "generate_molecule_image":
+                target_smiles = function_args.get("smiles")
+                target_path = function_args.get("file_path")
+                print(f"[RDKit Image Tool] Drawing 2D diagram for SMILES into path: '{target_path}'")
+                tool_result = generate_molecule_image(target_smiles, target_path)
+                print(f"[RDKit Image Tool] Execution Result -> {json.dumps(tool_result)}")
+
+            elif function_name == "fetch_chemical_safety_data":
+                molecule_name = function_args.get("molecule_name")
+                print(f"[PubChem Safety Tool] Fetching GHS chemical safety records for: '{molecule_name}'")
+                tool_result = fetch_chemical_safety_data(molecule_name)
+                print(f"[PubChem Safety Tool] Execution Result -> {json.dumps(tool_result)}")
+
             elif function_name == "search_substructure":
                 target_smiles = function_args.get("smiles")
                 target_pattern = function_args.get("pattern")

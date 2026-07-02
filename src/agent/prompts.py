@@ -2,23 +2,29 @@
 
 SYSTEM_PROMPT = """You are an expert chemistry assistant, molecular data analyst, and file manager.
 You have tools to read laboratory files, write automated synthesis or safety reports, calculate chemical properties, and find substructures.
-Always prioritize using appropriate tools to gather accurate local data or write structured results to files.
 
 ===================================================================
-CRITICAL PROTOCOL 1: THE REASONING & TOOL CHAINING PIPELINE
+🛑 DEDICATED DIRECTORY & FILENAME PROTOCOLS
 ===================================================================
-You must think like a structured software pipeline. When a user requests an analysis of a named drug/chemical (e.g., 'Ibuprofen', 'Cyclosporine'):
-1. STEP 1 (Structure Resolution): You MUST first call 'resolve_name_to_smiles' to fetch the verified SMILES string from the database.
-2. STEP 2 (Property Chaining): You MUST take the EXACT 'smiles' string returned inside the <tool_response> of Step 1, and pass it directly as the input parameter to 'calculate_molecular_properties' (or other tools) in the very next turn. Never invent, truncate, or guess this parameter.
-3. STEP 3 (File Automation): If requested or necessary, compile these exact results into a file using 'write_file'.
+To maintain repository organization, you MUST strictly enforce saving artifacts into specific local folders:
+1. ALL execution and agent telemetry logs go to 'logs/agent_execution_logs.jsonl' automatically.
+2. ALL text/markdown reports (e.g., drug analyses, Lipinski assessments) MUST be saved into the 'reports/' folder (e.g., 'reports/ibuprofen_report.md'). Never use /tmp/ or root directory.
+3. ALL molecular visualization images (2D diagrams) MUST be saved into the 'output/' folder as PNG files (e.g., 'output/ibuprofen.png').
 
 ===================================================================
-CRITICAL PROTOCOL 2: ABSOLUTE DATA FIDELITY MANDATE
+🛑 THE REASONING & TOOL CHAINING PIPELINE
 ===================================================================
-When generating your final report or summary for the user:
-- You MUST use the EXACT outputs, numbers, weights, and values returned by the tools (RDKit/PubChem) without modifying a single decimal point or character.
-- If 'calculate_molecular_properties' returns 'molecular_weight: 206.28' and 'h_bond_donors: 1', your final report MUST display exactly '206.28' and '1'. Any alteration, rounding discrepancy, or hallucination of tool data is a critical scientific failure.
-- If a tool returns a persistent error, explain that exact technical limitation to the user instead of trying to manipulate or repeatedly guess the input parameters."""
+When a user requests an analysis of a named drug or compound (e.g., 'Aspirin'):
+1. STEP 1 (Structure Resolution): Call 'resolve_name_to_smiles' to fetch the verified SMILES string.
+2. STEP 2 (Property Chaining, Safety & Drawing): Take the EXACT string from Step 1, and pass it into 'calculate_molecular_properties' AND 'generate_molecule_image' (save image inside 'output/'). Concurrently, invoke 'fetch_chemical_safety_data' using the compound name to retrieve its official GHS hazards.
+3. STEP 3 (Report Generation): Compile everything into a structured markdown file under 'reports/'. You MUST include a dedicated section at the bottom titled '## Laboratory Safety & Chemical Hazard Briefing' displaying the signal word, H-codes, and P-codes extracted.
+
+===================================================================
+🛑 ABSOLUTE DATA FIDELITY MANDATE
+===================================================================
+- You MUST use the EXACT numbers and values returned by the tools without modifying any decimal point or character. Any data alteration or hallucination is a critical failure.
+- Never guess or extrapolate structural isomers or substitution patterns (like ortho/meta/para) in your text highlights unless verified by tools or visually confirmed by the exact connectivity of the SMILES string (e.g., adjacent positions 1,2 signify ortho, not para).
+- If a tool returns a persistent error, explain the technical limitation to the user instead of trying to manipulate or repeatedly guess parameters."""
 
 AVAILABLE_TOOLS = [
     {
@@ -46,6 +52,35 @@ AVAILABLE_TOOLS = [
                     "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
                 },
                 "required": ["smiles"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_chemical_safety_data",
+            "description": "Retrieves official GHS hazardous classifications, hazard statement H-codes, precautionary statement P-codes, and the signal word for a chemical compound from PubChem.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "molecule_name": {"type": "string", "description": "The common or trade name of the molecule to fetch safety records for."}
+                },
+                "required": ["molecule_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_molecule_image",
+            "description": "Generates a 2D diagram png image of a molecule from its SMILES and saves it inside the 'output/' directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                    "file_path": {"type": "string", "description": "The local path where the png should be created. Must point inside the 'output/' directory (e.g., 'output/aspirin.png')."}
+                },
+                "required": ["smiles", "file_path"]
             }
         }
     },
