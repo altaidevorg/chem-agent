@@ -1,4 +1,4 @@
-# 🔬 Professional Chemistry AI Agent (v2.1)
+# 🔬 Professional Chemistry AI Agent 
 
 A sophisticated, stateful AI agent designed for professional chemical analysis, molecular property prediction, and structural informatics. This agent leverages Large Language Models (LLMs) combined with the powerful **RDKit** cheminformatics library and **PubChem** integration to provide accurate chemical insights.
 
