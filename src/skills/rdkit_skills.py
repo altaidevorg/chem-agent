@@ -599,10 +599,15 @@ class InterpretSmartsSkill(BaseSkill):
 
             num_rings = query.GetRingInfo().NumRings()
             
-            # Identify specific motifs via simple SMARTS matching on the query itself
+            # Identify specific motifs
             motifs = []
-            if query.HasSubstructMatch(Chem.MolFromSmarts("c1ccccc1"), useQueryQueryMatches=True): 
-                motifs.append("Benzene ring")
+            ring_info = query.GetRingInfo()
+            for ring in ring_info.AtomRings():
+                if len(ring) == 6:
+                    if all(query.GetAtomWithIdx(i).GetIsAromatic() and query.GetAtomWithIdx(i).GetAtomicNum() == 6 for i in ring):
+                        motifs.append("Benzene ring")
+                        break
+            
             if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O"), useQueryQueryMatches=True): 
                 motifs.append("Carboxylic acid group")
             if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N"), useQueryQueryMatches=True): 

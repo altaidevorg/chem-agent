@@ -2,7 +2,10 @@ import pytest
 from src.skills.rdkit_skills import (
     ResolveNameToSmilesSkill,
     CalculateMolecularPropertiesSkill,
-    CalculateMolecularSimilaritySkill
+    CalculateMolecularSimilaritySkill,
+    FindMaximumCommonSubstructureSkill,
+    InterpretSmartsSkill,
+    DeconstructCoreAndSidechainsSkill
 )
 
 def test_resolve_name_to_smiles():
@@ -31,3 +34,34 @@ def test_molecular_similarity():
     
     assert "tanimoto_similarity" in result
     assert 0 <= result["tanimoto_similarity"] <= 1.0
+
+def test_find_maximum_common_substructure():
+    skill = FindMaximumCommonSubstructureSkill()
+    # Ibuprofen and Naproxen
+    smiles_list = [
+        "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
+        "C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O"
+    ]
+    result = skill.execute(smiles_list=smiles_list)
+    assert result["status"] == "success"
+    assert "smarts" in result
+    assert result["num_atoms"] > 0
+
+def test_interpret_smarts_pattern():
+    skill = InterpretSmartsSkill()
+    # Benzene ring SMARTS
+    smarts = "c1ccccc1"
+    result = skill.execute(smarts=smarts)
+    assert result["status"] == "success"
+    assert "Benzene ring" in result["identified_motifs"]
+    assert result["total_atoms"] == 6
+
+def test_deconstruct_core_and_sidechains():
+    skill = DeconstructCoreAndSidechainsSkill()
+    # Toluene (Benzene core + Methyl sidechain)
+    smiles = "Cc1ccccc1"
+    core = "c1ccccc1"
+    result = skill.execute(smiles=smiles, core_smarts_or_smiles=core)
+    assert result["status"] == "success"
+    assert result["total_sidechains_found"] == 1
+    assert "*C" in result["isolated_sidechains"]
