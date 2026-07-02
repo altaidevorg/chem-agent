@@ -549,7 +549,8 @@ class FindMaximumCommonSubstructureSkill(BaseSkill):
                 "num_bonds": res.numBonds,
                 "ring_matches_ring_only": ring_matches_ring_only,
                 "complete_rings_only": complete_rings_only,
-                "status": "success"
+                "status": "timeout" if res.canceled else "success",
+                "timed_out": res.canceled
             }
         except Exception as e:
             return {"error": f"MCS calculation failed: {str(e)}"}
@@ -600,10 +601,14 @@ class InterpretSmartsSkill(BaseSkill):
             
             # Identify specific motifs via simple SMARTS matching on the query itself
             motifs = []
-            if query.HasSubstructMatch(Chem.MolFromSmarts("c1ccccc1")): motifs.append("Benzene ring")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O")): motifs.append("Carboxylic acid group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N")): motifs.append("Amide group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O")): motifs.append("Propionic acid backbone")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("c1ccccc1"), useQueryQueryMatches=True): 
+                motifs.append("Benzene ring")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O"), useQueryQueryMatches=True): 
+                motifs.append("Carboxylic acid group")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N"), useQueryQueryMatches=True): 
+                motifs.append("Amide group")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O"), useQueryQueryMatches=True): 
+                motifs.append("Propionic acid backbone")
 
             return {
                 "smarts": smarts,
