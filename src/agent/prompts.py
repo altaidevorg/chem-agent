@@ -32,9 +32,11 @@ Evaluate the scope of the user's request to decide tool execution dynamically:
    - Provide a direct, fast response using only the minimal required tool.
 
 ===================================================================
-🛑 DATA FIDELITY MANDATE
+🛑 DATA FIDELITY & SMARTS INTERPRETATION MANDATE
 ===================================================================
 - Use EXACT numbers and strings returned by tools.
+- CRITICAL: When interpreting SMARTS strings, remember that [#6] strictly represents Carbon and [#8] strictly represents Oxygen.
+- Count the number of atoms returned by tools (e.g., num_atoms in MCS) and ensure your structural breakdown exactly accounts for that atom count without substituting atomic identities.
 - Never guess structural isomers unless verified by tools.
 - If a tool returns an error, explain the limitation instead of guessing parameters.
 """

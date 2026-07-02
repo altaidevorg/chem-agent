@@ -17,13 +17,17 @@ A sophisticated, stateful AI agent designed for professional chemical analysis, 
    git clone <repository-url>
    cd chem-agent
    ```
-2. Install dependencies:
+2. Install the package in editable mode:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
 
 ### Running the Agent
-To start the interactive CLI session:
+To start the interactive CLI session, you can now use the installed command:
+```bash
+chem-agent
+```
+Alternatively, you can still run it via python:
 ```bash
 python -m src.main
 ```
@@ -49,9 +53,13 @@ chem-agent/
 │   │   └── file_skills.py  # I/O operations
 │   ├── config.py           # System configuration
 │   └── vllm_client.py      # LLM API client
+├── scripts/                # Utility and test scripts
+│   └── test_vllm.py        # LLM connection test script
+├── tests/                  # Unit and integration tests
 ├── output/                 # Generated molecule images (.png)
 ├── reports/                # Saved analytical reports
-└── requirements.txt        # Project dependencies
+├── pyproject.toml          # Project configuration and dependencies
+└── README.md               # Project documentation
 ```
 
 ---
@@ -68,6 +76,8 @@ The agent is equipped with specialized "skills" that allow it to interact with c
 - **`search_substructure`**: Identifies if a specific chemical pattern (SMARTS/SMILES) exists within a molecule.
 - **`calculate_molecular_similarity`**: Computes Tanimoto similarity scores between two molecules using ECFP4 fingerprints.
 - **`search_advanced_substructure`**: Performs Markush-like matching with dynamic sidechain filtering (e.g., alkyl or all-carbon constraints).
+- **`find_maximum_common_substructure`**: Identifies the largest common atom/bond mapping (MCS) shared among a list of molecules, useful for pharmacophore detection.
+- **`interpret_smarts_pattern`**: Deconstructs complex SMARTS strings into human-readable atom counts and structural motifs (e.g., identifying benzene rings or carboxylic acids).
 
 ### System & File Operations
 - **`read_file`**: Extracts text from `.txt`, `.md`, `.json`, and even `.pdf` documents.
@@ -88,12 +98,28 @@ The agent features a persistent **AgentMemory** system that tracks:
 
 ## 🤖 How the LLM Works
 
-The agent operates on a **Reasoning-Act-Observe (ReAct)** cycle:
+The agent operates on a **Reasoning-Act-Observe (ReAct)** cycle. Below is a step-by-step trace of a real-world complex query:
 
-1.  **Thought (`<think>`)**: The LLM first generates an internal reasoning process (Chain of Thought) to plan its next steps. These thoughts are logged in `logs/thoughts/`.
-2.  **Action**: The agent identifies the necessary tools and generates either a native tool call or an XML-based fallback.
-3.  **Observation**: The system executes the tool, captures the result, and feeds it back to the LLM.
-4.  **Report**: Once the task is complete, the agent synthesizes the findings into a professional report.
+### Case Study: Pharmacophore Detection (Ibuprofen & Naproxen)
+**User Query**: *"Identify the common structural core shared by the drugs 'Ibuprofen' and 'Naproxen'. Use the MCS tool to find the largest shared substructure and explain the resulting SMARTS pattern."*
+
+1.  **Step 1: Entity Resolution**
+    - The agent recognizes it needs SMILES strings for both names.
+    - **Action**: Calls `resolve_name_to_smiles` for "Ibuprofen" and "Naproxen".
+    - **Result**: Obtains `CC(C)CC1=CC=C(C=C1)C(C)C(=O)O` and `C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O`.
+
+2.  **Step 2: Substructure Discovery (MCS)**
+    - The agent feeds both SMILES into the Maximum Common Substructure engine.
+    - **Action**: Calls `find_maximum_common_substructure`.
+    - **Result**: Returns a complex SMARTS pattern with **14 atoms** and **14 bonds**.
+
+3.  **Step 3: Pattern Interpretation**
+    - To ensure chemical accuracy and avoid "hallucinating" the SMARTS meaning, the agent verifies the pattern.
+    - **Action**: Calls `interpret_smarts_pattern`.
+    - **Result**: Confirms the presence of a **Benzene ring** and a **Propionic acid backbone** (12 Carbons, 2 Oxygens).
+
+4.  **Step 4: Final Synthesis**
+    - The agent combines all findings into a professional report, explaining that both drugs share the fundamental **2-arylpropionic acid** scaffold responsible for their COX-inhibiting activity.
 
 ---
 

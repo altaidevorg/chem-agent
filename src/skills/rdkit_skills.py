@@ -14,7 +14,7 @@ from rdkit.Chem import Descriptors
 from rdkit import DataStructs
 from rdkit.Chem import rdFingerprintGenerator 
 from rdkit.Chem import AllChem
-from rdkit.Chem import Draw
+from rdkit.Chem import Draw, rdFMCS
 from src.skills.base import BaseSkill, SkillRegistry
 
 # Redirect RDKit C++ warnings/errors to Python stream
@@ -357,6 +357,64 @@ class CalculateMolecularSimilaritySkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
+class DeconstructCoreAndSidechainsSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "deconstruct_core_and_sidechains"
+
+    @property
+    def description(self) -> str:
+        return "Chops away a specified core scaffold (SMILES/SMARTS) from a target molecule, isolating the remaining sidechains (R-groups) with their respective attachment indices."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the target molecule to deconstruct."},
+                "core_smarts_or_smiles": {"type": "string", "description": "The SMARTS or SMILES pattern of the core scaffold to be removed."}
+            },
+            "required": ["smiles", "core_smarts_or_smiles"]
+        }
+
+    def execute(self, smiles: str, core_smarts_or_smiles: str) -> Dict[str, Any]:
+        """Isolates sidechains by replacing the core scaffold with dummy atoms labeled by index."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+                # Try parsing as SMILES first to preserve full chemical details, then fall back to SMARTS
+                core = Chem.MolFromSmiles(core_smarts_or_smiles) or Chem.MolFromSmarts(core_smarts_or_smiles)
+            
+            if mol is None:
+                return {"error": f"Invalid target SMILES provided: {smiles}"}
+            if core is None:
+                return {"error": f"Invalid core SMARTS/SMILES pattern: {core_smarts_or_smiles}"}
+            
+            # Core yapısını molekülden kesip çıkarıyoruz (labelByIndex=True bağlantı atomu indeksini korur)
+            with rdBase.BlockLogs():
+                sidechains_combined = Chem.ReplaceCore(mol, core, labelByIndex=True)
+                
+            if sidechains_combined is None:
+                return {"error": "The specified core scaffold was not found within the target molecule."}
+                
+            # Kombine yan zincirleri tekil molekül fragmanlarına ayırıyoruz
+            frags = Chem.GetMolFrags(sidechains_combined, asMols=True)
+            
+            isolated_sidechains = []
+            for frag in frags:
+                frag_smiles = Chem.MolToSmiles(frag)
+                isolated_sidechains.append(frag_smiles)
+                
+            return {
+                "target_smiles": smiles,
+                "core_pattern_used": core_smarts_or_smiles,
+                "isolated_sidechains": isolated_sidechains,
+                "total_sidechains_found": len(isolated_sidechains),
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Core deconstruction failed: {str(e)}"}
+
 class SearchAdvancedSubstructureSkill(BaseSkill):
     @property
     def name(self) -> str:
@@ -419,6 +477,155 @@ class SearchAdvancedSubstructureSkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
+class FindMaximumCommonSubstructureSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "find_maximum_common_substructure"
+
+    @property
+    def description(self) -> str:
+        return "Identifies the Maximum Common Substructure (MCS) shared among a list of molecules. Useful for identifying common pharmacophores or scaffolds in a set of active compounds. CRITICAL: When interpreting the returned SMARTS, remember that [#6] is Carbon and [#8] is Oxygen. Ensure your structural analysis matches the 'num_atoms' count exactly."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles_list": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of SMILES strings to analyze for a common substructure."
+                },
+                "ring_matches_ring_only": {
+                    "type": "boolean",
+                    "description": "If true, ring atoms in the MCS must match ring atoms in the target molecules.",
+                    "default": False
+                },
+                "complete_rings_only": {
+                    "type": "boolean",
+                    "description": "If true, if any part of a ring is included in the MCS, the entire ring must be included.",
+                    "default": False
+                }
+            },
+            "required": ["smiles_list"]
+        }
+
+    def execute(self, smiles_list: List[str], ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> Dict[str, Any]:
+        """Finds the largest common atom/bond mapping shared by multiple molecules."""
+        try:
+            if not smiles_list or len(smiles_list) < 2:
+                return {"error": "At least two SMILES strings are required to find a common substructure."}
+
+            mols = []
+            with rdBase.BlockLogs():
+                for s in smiles_list:
+                    m = Chem.MolFromSmiles(s)
+                    if m:
+                        mols.append(m)
+                    else:
+                        return {"error": f"Invalid SMILES encountered in list: {s}"}
+
+            # Perform MCS search
+            res = rdFMCS.FindMCS(
+                mols,
+                maximizeBonds=True,
+                ringMatchesRingOnly=ring_matches_ring_only,
+                completeRingsOnly=complete_rings_only,
+                timeout=30 # 30 second timeout for safety
+            )
+
+            if not res.smartsString:
+                return {
+                    "smarts": "",
+                    "num_atoms": 0,
+                    "num_bonds": 0,
+                    "status": "no_common_substructure",
+                    "message": "No common substructure found among the provided molecules."
+                }
+
+            return {
+                "smarts": res.smartsString,
+                "num_atoms": res.numAtoms,
+                "num_bonds": res.numBonds,
+                "ring_matches_ring_only": ring_matches_ring_only,
+                "complete_rings_only": complete_rings_only,
+                "status": "timeout" if res.canceled else "success",
+                "timed_out": res.canceled
+            }
+        except Exception as e:
+            return {"error": f"MCS calculation failed: {str(e)}"}
+
+class InterpretSmartsSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "interpret_smarts_pattern"
+
+    @property
+    def description(self) -> str:
+        return "Deconstructs a SMARTS string into a human-readable structural description. Use this to verify your understanding of a substructure pattern before reporting it to the user."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smarts": {"type": "string", "description": "The SMARTS string to interpret."}
+            },
+            "required": ["smarts"]
+        }
+
+    def execute(self, smarts: str) -> Dict[str, Any]:
+        """Provides a breakdown of a SMARTS pattern by counting atom types and identifying structural motifs."""
+        try:
+            with rdBase.BlockLogs():
+                query = Chem.MolFromSmarts(smarts)
+            
+            if not query:
+                return {"error": f"Invalid SMARTS pattern: {smarts}"}
+
+            Chem.FastFindRings(query)
+
+            atom_counts = {}
+            for atom in query.GetAtoms():
+                symbol = atom.GetSymbol() if atom.GetSymbol() != "*" else f"Type_{atom.GetAtomicNum()}"
+                if atom.GetAtomicNum() == 6: symbol = "Carbon"
+                elif atom.GetAtomicNum() == 8: symbol = "Oxygen"
+                elif atom.GetAtomicNum() == 7: symbol = "Nitrogen"
+                elif atom.GetAtomicNum() == 16: symbol = "Sulfur"
+                elif atom.GetAtomicNum() == 9: symbol = "Fluorine"
+                elif atom.GetAtomicNum() == 17: symbol = "Chlorine"
+                
+                atom_counts[symbol] = atom_counts.get(symbol, 0) + 1
+
+            num_rings = query.GetRingInfo().NumRings()
+            
+            # Identify specific motifs
+            motifs = []
+            ring_info = query.GetRingInfo()
+            for ring in ring_info.AtomRings():
+                if len(ring) == 6:
+                    if all(query.GetAtomWithIdx(i).GetIsAromatic() and query.GetAtomWithIdx(i).GetAtomicNum() == 6 for i in ring):
+                        motifs.append("Benzene ring")
+                        break
+            
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O")): 
+                motifs.append("Carboxylic acid group")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N")): 
+                motifs.append("Amide group")
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O")): 
+                motifs.append("Propionic acid backbone")
+
+            return {
+                "smarts": smarts,
+                "total_atoms": query.GetNumAtoms(),
+                "atom_breakdown": atom_counts,
+                "ring_count": num_rings,
+                "identified_motifs": motifs,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"SMARTS interpretation failed: {str(e)}"}
+
 class SidechainChecker:
     matchers = {
         'alkyl': lambda at: not at.GetIsAromatic(),
@@ -459,6 +666,9 @@ SkillRegistry.register(FetchChemicalSafetyDataSkill())
 SkillRegistry.register(SearchSubstructureSkill())
 SkillRegistry.register(CalculateMolecularSimilaritySkill())
 SkillRegistry.register(SearchAdvancedSubstructureSkill())
+SkillRegistry.register(FindMaximumCommonSubstructureSkill())
+SkillRegistry.register(InterpretSmartsSkill())
+SkillRegistry.register(DeconstructCoreAndSidechainsSkill())
 
 # Legacy functions kept for backward compatibility if needed, 
 # but the agent should now use SkillRegistry.
@@ -482,3 +692,12 @@ def calculate_molecular_similarity(smiles1: str, smiles2: str) -> dict:
 
 def search_advanced_substructure(smiles: str, pattern: str, constraint_atom_idx: int, query_type: str) -> dict:
     return SearchAdvancedSubstructureSkill().execute(smiles, pattern, constraint_atom_idx, query_type)
+
+def find_maximum_common_substructure(smiles_list: List[str], ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> dict:
+    return FindMaximumCommonSubstructureSkill().execute(smiles_list, ring_matches_ring_only, complete_rings_only)
+
+def interpret_smarts_pattern(smarts: str) -> dict:
+    return InterpretSmartsSkill().execute(smarts)
+
+def deconstruct_core_and_sidechains(smiles: str, core_smarts_or_smiles: str) -> dict:
+    return DeconstructCoreAndSidechainsSkill().execute(smiles, core_smarts_or_smiles)
