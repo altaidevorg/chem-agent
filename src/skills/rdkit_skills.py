@@ -15,7 +15,6 @@ from rdkit import DataStructs
 from rdkit.Chem import rdFingerprintGenerator 
 from rdkit.Chem import AllChem
 from rdkit.Chem import Draw
-from rdkit.Chem import rdChemReactions
 from src.skills.base import BaseSkill, SkillRegistry
 
 # Redirect RDKit C++ warnings/errors to Python stream
@@ -88,36 +87,21 @@ class CalculateMolecularPropertiesSkill(BaseSkill):
 
     def execute(self, smiles: str) -> Dict[str, Any]:
         """Parses a SMILES string and computes standard physicochemical properties using advanced RDKit features."""
-        sio = StringIO()
-        sys.stderr = sio
-        
         try:
             params = Chem.SmilesParserParams()
             params.sanitize = True
             params.allowCXSMILES = True
             
-            mol = Chem.MolFromSmiles(smiles, params)
-            sanitized = True
-            fallback_reason = None
+            # Use BlockLogs to prevent global stderr pollution and ensure thread-safety
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles, params)
             
             if mol is None:
-                error_msg = sio.getvalue().strip()
-                params.sanitize = False
-                mol = Chem.MolFromSmiles(smiles, params)
-                
-                if mol is not None:
-                    try:
-                        Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
-                        sanitized = False
-                        fallback_reason = f"Partial Sanitization applied. Native parser error: {error_msg}"
-                    except Exception as sanit_err:
-                        return {"error": f"SMILES topology loaded but sanitization completely failed: {str(sanit_err)}. Parser log: {error_msg}"}
-                else:
-                    return {"error": f"SMILES Parse/Syntax Error. RDKit Core Log: {error_msg}"}
+                return {"error": f"SMILES Parse/Syntax Error for input: '{smiles}'. Please verify the chemical structure."}
             
-            log_p_val = round(Descriptors.MolLogP(mol), 2) if sanitized else "N/A (Complex Structure)"
-            hbd_val = Descriptors.NumHDonors(mol) if sanitized else "N/A (Complex Structure)"
-            hba_val = Descriptors.NumHAcceptors(mol) if sanitized else "N/A (Complex Structure)"
+            log_p_val = round(Descriptors.MolLogP(mol), 2)
+            hbd_val = Descriptors.NumHDonors(mol)
+            hba_val = Descriptors.NumHAcceptors(mol)
             
             return {
                 "smiles": smiles,
@@ -125,13 +109,10 @@ class CalculateMolecularPropertiesSkill(BaseSkill):
                 "log_p": log_p_val,
                 "h_bond_donors": hbd_val,
                 "h_bond_acceptors": hba_val,
-                "parsing_status": "Success" if sanitized else "Partial Fallback",
-                "fallback_notes": fallback_reason
+                "parsing_status": "Success"
             }
         except Exception as e:
             return {"error": f"Critical error during molecular property calculation: {str(e)}"}
-        finally:
-            sys.stderr = sys.__stderr__
 
 class GenerateMoleculeImageSkill(BaseSkill):
     @property
@@ -160,13 +141,10 @@ class GenerateMoleculeImageSkill(BaseSkill):
             if parent_dir and not os.path.exists(parent_dir):
                 os.makedirs(parent_dir, exist_ok=True)
                 
-            mol = Chem.MolFromSmiles(smiles)
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
             if mol is None:
-                params = Chem.SmilesParserParams()
-                params.sanitize = False
-                mol = Chem.MolFromSmiles(smiles, params)
-                if mol is None:
-                    return {"error": f"Invalid SMILES format provided for visualization: {smiles}"}
+                return {"error": f"Invalid SMILES format provided for visualization: {smiles}"}
             
             AllChem.Compute2DCoords(mol)
             Draw.MolToFile(mol, file_path, size=(400, 400))
@@ -179,78 +157,6 @@ class GenerateMoleculeImageSkill(BaseSkill):
             }
         except Exception as e:
             return {"error": f"Failed to generate molecule image: {str(e)}"}
-
-class SimulateChemicalReactionSkill(BaseSkill):
-    @property
-    def name(self) -> str:
-        return "simulate_chemical_reaction"
-
-    @property
-    def description(self) -> str:
-        return "Simulates an organic transformation between a list of reactant SMILES and predicts the primary product molecule SMILES structure."
-
-    @property
-    def parameters(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "reactant_smiles_list": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "The list of raw reactant SMILES strings participating in the reaction."
-                },
-                "reaction_type": {
-                    "type": "string",
-                    "description": "The type of organic transformation to execute. Supported values: 'esterification', 'amide_coupling'."
-                }
-            },
-            "required": ["reactant_smiles_list", "reaction_type"]
-        }
-
-    def execute(self, reactant_smiles_list: List[str], reaction_type: str) -> Dict[str, Any]:
-        """Simulates an organic chemical reaction between reactants using SMARTS transformation templates."""
-        try:
-            reaction_templates = {
-                "esterification": "[C:1](=[O:2])[OH:3].[OH:4][C:5]>>[C:1](=[O:2])[O:3][C:5]",
-                "amide_coupling": "[C:1](=[O:2])[OH:3].[NX3;H2,H1,H0:4][C:5]>>[C:1](=[O:2])[N:4][C:5]"
-            }
-            
-            rxn_type_clean = reaction_type.lower().strip().replace(" ", "_")
-            if rxn_type_clean not in reaction_templates:
-                return {"error": f"Unsupported reaction type: '{reaction_type}'. Supported: {list(reaction_templates.keys())}"}
-                
-            reactant_mols = []
-            for smiles in reactant_smiles_list:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol is None:
-                    return {"error": f"Invalid reactant SMILES string provided: '{smiles}'"}
-                reactant_mols.append(mol)
-                
-            rxn_smarts = reaction_templates[rxn_type_clean]
-            rxn = rdChemReactions.ReactionFromSmarts(rxn_smarts)
-            
-            products_matrix = rxn.RunReactants(tuple(reactant_mols))
-            if not products_matrix:
-                return {"error": f"Reaction simulation failed. Reactants do not match the transformation template for '{reaction_type}'."}
-                
-            primary_product_mol = products_matrix[0][0]
-            
-            try:
-                Chem.SanitizeMol(primary_product_mol)
-            except Exception:
-                pass
-                
-            product_smiles = Chem.MolToSmiles(primary_product_mol)
-            
-            return {
-                "reaction_type": rxn_type_clean,
-                "reactants": reactant_smiles_list,
-                "product_smiles": product_smiles,
-                "status": "success",
-                "message": "Chemical reaction successfully simulated and product structure generated."
-            }
-        except Exception as e:
-            return {"error": f"Critical error during chemical reaction simulation: {str(e)}"}
 
 class FetchChemicalSafetyDataSkill(BaseSkill):
     @property
@@ -328,6 +234,9 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
             
             for s in raw_strings:
                 s_clean = s.strip()
+                if s_clean.startswith("http"):
+                    continue
+                    
                 if s_clean == "Danger":
                     signal_word = "Danger"
                 elif s_clean == "Warning" and signal_word != "Danger":
@@ -378,7 +287,8 @@ class SearchSubstructureSkill(BaseSkill):
     def execute(self, smiles: str, pattern: str, use_chirality: bool = False) -> Dict[str, Any]:
         """Checks if a specific substructure pattern (SMILES or SMARTS) exists within a target molecule."""
         try:
-            mol = Chem.MolFromSmiles(smiles)
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return {"error": f"Invalid target SMILES: {smiles}"}
             
@@ -425,8 +335,9 @@ class CalculateMolecularSimilaritySkill(BaseSkill):
     def execute(self, smiles1: str, smiles2: str) -> Dict[str, Any]:
         """Computes the structural Tanimoto similarity between two molecules (radius=2, ECFP4)."""
         try:
-            mol1 = Chem.MolFromSmiles(smiles1)
-            mol2 = Chem.MolFromSmiles(smiles2)
+            with rdBase.BlockLogs():
+                mol1 = Chem.MolFromSmiles(smiles1)
+                mol2 = Chem.MolFromSmiles(smiles2)
             
             if mol1 is None or mol2 is None:
                 return {"error": f"Invalid SMILES provided. smiles1: {smiles1}, smiles2: {smiles2}"}
@@ -471,8 +382,9 @@ class SearchAdvancedSubstructureSkill(BaseSkill):
     def execute(self, smiles: str, pattern: str, constraint_atom_idx: int, query_type: str) -> Dict[str, Any]:
         """Performs advanced substructure matching with dynamic sidechain filtering."""
         try:
-            mol = Chem.MolFromSmiles(smiles)
-            patt = Chem.MolFromSmarts(pattern)
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+                patt = Chem.MolFromSmarts(pattern)
             
             if mol is None or patt is None:
                 return {"error": "Invalid target SMILES or SMARTS pattern."}
@@ -543,7 +455,6 @@ class SidechainChecker:
 SkillRegistry.register(ResolveNameToSmilesSkill())
 SkillRegistry.register(CalculateMolecularPropertiesSkill())
 SkillRegistry.register(GenerateMoleculeImageSkill())
-SkillRegistry.register(SimulateChemicalReactionSkill())
 SkillRegistry.register(FetchChemicalSafetyDataSkill())
 SkillRegistry.register(SearchSubstructureSkill())
 SkillRegistry.register(CalculateMolecularSimilaritySkill())
@@ -556,9 +467,6 @@ def calculate_molecular_properties(smiles: str) -> dict:
 
 def generate_molecule_image(smiles: str, file_path: str) -> dict:
     return GenerateMoleculeImageSkill().execute(smiles, file_path)
-
-def simulate_chemical_reaction(reactant_smiles_list: list, reaction_type: str) -> dict:
-    return SimulateChemicalReactionSkill().execute(reactant_smiles_list, reaction_type)
 
 def fetch_chemical_safety_data(molecule_name: str) -> dict:
     return FetchChemicalSafetyDataSkill().execute(molecule_name)

@@ -35,6 +35,7 @@ class ChemistryAgent:
             **data
         }
         try:
+            os.makedirs(os.path.dirname(TELEMETRY_LOG_FILE), exist_ok=True)
             with open(TELEMETRY_LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         except Exception as e:
@@ -53,6 +54,7 @@ class ChemistryAgent:
         # Also write to a dedicated session thought file
         thought_file = os.path.join(THOUGHT_LOGS_DIR, f"thoughts_{self.memory.session_id}.md")
         try:
+            os.makedirs(os.path.dirname(thought_file), exist_ok=True)
             with open(thought_file, "a", encoding="utf-8") as f:
                 if iteration == 1 and f.tell() == 0:
                     f.write(f"# Chain of Thought Log - Session {self.memory.session_id}\n\n")
@@ -71,17 +73,6 @@ class ChemistryAgent:
         if not skill:
             return {"error": f"Tool '{name}' not found in registry."}
         
-        # Stateful auto-healing for SMILES strings using memory
-        if "smiles" in arguments:
-            model_smiles = arguments["smiles"]
-            for entity in self.memory.entities.values():
-                exact_smiles = entity.get("smiles")
-                if exact_smiles and model_smiles != exact_smiles:
-                    if exact_smiles[:15] == model_smiles[:15] or len(model_smiles) > len(exact_smiles) * 0.7:
-                        print(f"[Agent Core] Auto-healing SMILES: {model_smiles} -> {exact_smiles}")
-                        arguments["smiles"] = exact_smiles
-                        break
-
         try:
             result = skill.execute(**arguments)
             
@@ -90,8 +81,6 @@ class ChemistryAgent:
                 self.memory.update_entity(name=arguments.get("molecule_name"), smiles=result["smiles"])
             elif name == "calculate_molecular_properties" and "smiles" in result:
                 self.memory.update_entity(name=None, smiles=result["smiles"], properties=result)
-            elif name == "simulate_chemical_reaction" and "product_smiles" in result:
-                self.memory.update_entity(name=f"Product of {arguments.get('reaction_type')}", smiles=result["product_smiles"])
                 
             return result
         except Exception as e:
