@@ -382,8 +382,8 @@ class DeconstructCoreAndSidechainsSkill(BaseSkill):
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
-                # Hem SMARTS hem SMILES girdisini tolere etmek için çift yönlü deneme
-                core = Chem.MolFromSmarts(core_smarts_or_smiles) or Chem.MolFromSmiles(core_smarts_or_smiles)
+                # Try parsing as SMILES first to preserve full chemical details, then fall back to SMARTS
+                core = Chem.MolFromSmiles(core_smarts_or_smiles) or Chem.MolFromSmarts(core_smarts_or_smiles)
             
             if mol is None:
                 return {"error": f"Invalid target SMILES provided: {smiles}"}
