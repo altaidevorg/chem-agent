@@ -2,3 +2,4 @@ openai
 rdkit
 streamlit
 pypdf
+python-dotenv
