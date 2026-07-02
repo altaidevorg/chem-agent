@@ -608,11 +608,11 @@ class InterpretSmartsSkill(BaseSkill):
                         motifs.append("Benzene ring")
                         break
             
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O"), useQueryQueryMatches=True): 
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O")): 
                 motifs.append("Carboxylic acid group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N"), useQueryQueryMatches=True): 
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N")): 
                 motifs.append("Amide group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O"), useQueryQueryMatches=True): 
+            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O")): 
                 motifs.append("Propionic acid backbone")
 
             return {

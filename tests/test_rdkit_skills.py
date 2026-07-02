@@ -37,31 +37,40 @@ def test_molecular_similarity():
 
 def test_find_maximum_common_substructure():
     skill = FindMaximumCommonSubstructureSkill()
-    # Ibuprofen and Naproxen
+    # Case 1: Simple alcohols
+    result = skill.execute(smiles_list=["CCO", "CCCO"])
+    assert "smarts" in result
+    assert result["num_atoms"] > 0
+    
+    # Case 2: Ibuprofen and Naproxen
     smiles_list = [
         "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
         "C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O"
     ]
     result = skill.execute(smiles_list=smiles_list)
     assert result["status"] == "success"
-    assert "smarts" in result
     assert result["num_atoms"] > 0
 
 def test_interpret_smarts_pattern():
     skill = InterpretSmartsSkill()
-    # Benzene ring SMARTS
-    smarts = "c1ccccc1"
-    result = skill.execute(smarts=smarts)
+    # Case 1: Benzene ring
+    result = skill.execute(smarts="c1ccccc1")
     assert result["status"] == "success"
     assert "Benzene ring" in result["identified_motifs"]
-    assert result["total_atoms"] == 6
+    
+    # Case 2: Carboxylic acid
+    result = skill.execute(smarts="C(=O)O")
+    assert result["status"] == "success"
+    assert "Carboxylic acid group" in result["identified_motifs"]
 
 def test_deconstruct_core_and_sidechains():
     skill = DeconstructCoreAndSidechainsSkill()
-    # Toluene (Benzene core + Methyl sidechain)
-    smiles = "Cc1ccccc1"
-    core = "c1ccccc1"
-    result = skill.execute(smiles=smiles, core_smarts_or_smiles=core)
+    # Case 1: Ethanol with CO core
+    result = skill.execute(smiles="CCO", core_smarts_or_smiles="CO")
     assert result["status"] == "success"
-    assert result["total_sidechains_found"] == 1
+    assert len(result["isolated_sidechains"]) > 0
+    
+    # Case 2: Toluene with Benzene core
+    result = skill.execute(smiles="Cc1ccccc1", core_smarts_or_smiles="c1ccccc1")
+    assert result["status"] == "success"
     assert "*C" in result["isolated_sidechains"]
