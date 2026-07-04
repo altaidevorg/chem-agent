@@ -43,12 +43,20 @@ class ResolveNameToSmilesSkill(BaseSkill):
         }
 
     def execute(self, molecule_name: str) -> Dict[str, Any]:
-        """Resolves a common drug or molecule name to its canonical/isomeric SMILES string using PubChem API."""
+        """Resolves a common drug or molecule name to its canonical/isomeric SMILES string using PubChem API via a robust POST request."""
         try:
-            safe_name = urllib.parse.quote(molecule_name)
-            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{safe_name}/property/SMILES,ConnectivitySMILES,IsomericSMILES,CanonicalSMILES/JSON"
+            url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/property/SMILES,ConnectivitySMILES,IsomericSMILES,CanonicalSMILES/JSON"
             
-            req = urllib.request.Request(url, headers={'User-Agent': 'ChemAgent/1.0'})
+            # Use POST to handle names with special characters or spaces safely
+            data_dict = {"name": molecule_name}
+            encoded_data = urllib.parse.urlencode(data_dict).encode("utf-8")
+            
+            req = urllib.request.Request(
+                url, 
+                data=encoded_data, 
+                headers={'User-Agent': 'ChemAgent/1.0'}
+            )
+            
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 properties = data["PropertyTable"]["Properties"][0]
@@ -181,12 +189,19 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
         }
 
     def execute(self, molecule_name: str) -> Dict[str, Any]:
-        """Uses PubChem PUG-VIEW API to fetch official GHS hazard classifications (H-codes and P-codes) for a chemical compound."""
+        """Uses PubChem PUG-VIEW API to fetch official GHS hazard classifications for a chemical compound using a robust POST request for CID lookup."""
         try:
-            safe_name = urllib.parse.quote(molecule_name)
-            cid_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{safe_name}/cids/JSON"
+            # Step 1: Resolve name to CID using POST to handle special characters in names
+            cid_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/cids/JSON"
+            data_dict = {"name": molecule_name}
+            encoded_data = urllib.parse.urlencode(data_dict).encode("utf-8")
             
-            req_cid = urllib.request.Request(cid_url, headers={'User-Agent': 'ChemAgent/1.0'})
+            req_cid = urllib.request.Request(
+                cid_url, 
+                data=encoded_data, 
+                headers={'User-Agent': 'ChemAgent/1.0'}
+            )
+            
             try:
                 with urllib.request.urlopen(req_cid, timeout=5) as response:
                     cid_data = json.loads(response.read().decode('utf-8'))
@@ -194,6 +209,7 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
             except Exception:
                 return {"error": f"Could not find verified PubChem CID for molecule name '{molecule_name}'."}
                 
+            # Step 2: Fetch safety data using PUG-VIEW (PUG-VIEW uses CID in path)
             safety_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON?heading=Safety+and+Hazards"
             req_safety = urllib.request.Request(safety_url, headers={'User-Agent': 'ChemAgent/1.0'})
             
@@ -762,16 +778,22 @@ class ConvertSmilesToInchiSkill(BaseSkill):
         }
 
     def execute(self, smiles: str) -> Dict[str, Any]:
-        """Converts SMILES to InChI and InChIKey."""
+        """Converts SMILES to InChI and InChIKey safely with guard checks and optimized RDKit calls."""
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return {"error": f"Invalid SMILES pattern for InChI conversion: {smiles}"}
-       
-       
-            inchi_str = inchi.MolToInchi(mol) 
-            inchikey = inchi.InchiToInchiKey(inchi_str)
+            
+            # 1. Generate InChI string
+            inchi_str = inchi.MolToInchi(mol)
+            
+            # Guard check to prevent passing empty strings to further InChI functions
+            if not inchi_str:
+                return {"error": f"RDKit failed to generate a valid InChI string for SMILES: {smiles}"}
+            
+            # 2. Generate InChIKey directly from molecule (Optimization)
+            inchikey = inchi.MolToInchiKey(mol)
             
             return {
                 "smiles": smiles,
@@ -780,7 +802,7 @@ class ConvertSmilesToInchiSkill(BaseSkill):
                 "status": "success"
             }
         except Exception as e:
-            return {"error": f"InChI conversion failed: {str(e)}"}
+            return {"error": f"InChI conversion failed due to a critical error: {str(e)}"}
             
 class CountHeavyAtomsAndRingsSkill(BaseSkill):
     @property
@@ -822,6 +844,21 @@ class CountHeavyAtomsAndRingsSkill(BaseSkill):
             return {"error": f"Failed to count atoms and rings: {str(e)}"}
 
 class DetectFunctionalGroupsSkill(BaseSkill):
+    # Pre-compile static SMARTS patterns at the class level for performance (runs only once)
+    _FG_PATTERNS = {
+        "alcohol": Chem.MolFromSmarts("[C,c;!$(C(=O))][OH]"),
+        "carboxylic_acid": Chem.MolFromSmarts("C(=O)[OH,O-]"),
+        "amine": Chem.MolFromSmarts("[NX3;H2,H1,H0;!$(N-C=O)]"),
+        "halogen": Chem.MolFromSmarts("[F,Cl,Br,I]"),
+        "ketone": Chem.MolFromSmarts("[#6][CX3](=O)[#6]"),
+        "aldehyde": Chem.MolFromSmarts("[CX3H1](=O)"),
+        "ester": Chem.MolFromSmarts("[CX3](=O)[OX2H0][#6]"),
+        "ether": Chem.MolFromSmarts("[OD2]([#6])[#6]"),
+        "amide": Chem.MolFromSmarts("[CX3](=O)[NX3]"),
+        "nitro": Chem.MolFromSmarts("[$([NX3](=O)=O),$([NX3+]([O-])=O)]"),
+        "thiol": Chem.MolFromSmarts("[C,c][SH]")
+    }
+
     @property
     def name(self) -> str:
         return "detect_functional_groups"
@@ -841,52 +878,18 @@ class DetectFunctionalGroupsSkill(BaseSkill):
         }
 
     def execute(self, smiles: str) -> Dict[str, Any]:
-        """Detects presence and counts of basic functional groups using SMARTS matching."""
+        """Detects presence and counts of basic functional groups using pre-compiled SMARTS matching."""
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return {"error": f"Invalid SMILES pattern: {smiles}"}
             
-            # SMARTS definitions for basic functional groups
-            fg_patterns = {
-                # 1. Alcohols and Phenols (-OH)
-                "alcohol": "[C,c;!$(C(=O))][OH]",
-                
-                # 2. Carboxylic Acid (-COOH or deprotonated -COO-)
-                "carboxylic_acid": "C(=O)[OH,O-]",
-                
-                # 3. Amines (Primary, Secondary, Tertiary - Amides excluded)
-                "amine": "[NX3;H2,H1,H0;!$(N-C=O)]",
-                
-                # 4. Halogens (F, Cl, Br, I)
-                "halogen": "[F,Cl,Br,I]",
-                
-                # 5. Ketones (C=O between two carbons)
-                "ketone": "[#6][CX3](=O)[#6]",
-                
-                # 6. Aldehydes (Terminal C=O group)
-                "aldehyde": "[CX3H1](=O)",
-                
-                # 7. Esters (O-Carbon attached to carbonyl group)
-                "ester": "[CX3](=O)[OX2H0][#6]",
-                
-                # 8. Ethers (Oxygen between two carbons)
-                "ether": "[OD2]([#6])[#6]",
-                
-                # 9. Amides (Common linkage in medicinal chemistry, C(=O)N)
-                "amide": "[CX3](=O)[NX3]",
-                
-                # 10. Nitro Group (-NO2)
-                "nitro": "[$([NX3](=O)=O),$([NX3+]([O-])=O)]",
-                
-                # 11. Thiols / Mercaptans (-SH sulfur group)
-                "thiol": "[C,c][SH]"
-            }
-            
             detected_groups = {}
-            for group_name, smarts in fg_patterns.items():
-                patt = Chem.MolFromSmarts(smarts)
+            # Use pre-compiled RDKit objects from class level for better performance
+            for group_name, patt in self._FG_PATTERNS.items():
+                if patt is None:
+                    continue
                 matches = mol.GetSubstructMatches(patt)
                 detected_groups[group_name] = {
                     "present": len(matches) > 0,
@@ -921,13 +924,21 @@ class ResolveSmilesToNameSkill(BaseSkill):
         }
 
     def execute(self, smiles: str) -> Dict[str, Any]:
-        """Resolves a SMILES string to its common title and IUPAC name via PubChem."""
+        """Resolves a SMILES string to its common title and IUPAC name via PubChem using a robust POST request."""
         try:
-            # Use strict encoding for SMILES to prevent characters from breaking the URL
-            safe_smiles = urllib.parse.quote(smiles, safe='')
-            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{safe_smiles}/property/Title,IUPACName/JSON"
+            # Use POST endpoint to avoid issues with slashes in SMILES and URL length limits
+            url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/property/Title,IUPACName/JSON"
             
-            req = urllib.request.Request(url, headers={'User-Agent': 'ChemAgent/1.0'})
+            # Encode SMILES data to be sent in the HTTP Body
+            data_dict = {"smiles": smiles}
+            encoded_data = urllib.parse.urlencode(data_dict).encode("utf-8")
+            
+            req = urllib.request.Request(
+                url, 
+                data=encoded_data, 
+                headers={'User-Agent': 'ChemAgent/1.0'}
+            )
+            
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 properties = data["PropertyTable"]["Properties"][0]
