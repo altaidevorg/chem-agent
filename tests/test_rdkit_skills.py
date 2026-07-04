@@ -100,11 +100,25 @@ def test_count_heavy_atoms_and_rings():
     assert result["total_ring_count"] == 1
 
 def test_detect_functional_groups():
+    """Verifies that functional groups are detected correctly and checks against ether/ester regressions."""
     skill = DetectFunctionalGroupsSkill()
-    # Ethanol has an alcohol group
+    
+    # 1. Alcohol Test (Ethanol)
     result = skill.execute(smiles="CCO")
     assert result["status"] == "success"
     assert result["functional_groups"]["alcohol"]["present"] is True
+    
+    # 2. Real Ether Test (Diethyl ether)
+    result_ether = skill.execute(smiles="CCOCC")
+    assert result_ether["status"] == "success"
+    assert result_ether["functional_groups"]["ether"]["present"] is True
+    
+    # 3. Ester Control (Ethyl acetate) -> Regression Test
+    result_ester = skill.execute(smiles="CC(=O)OCC")
+    assert result_ester["status"] == "success"
+    assert result_ester["functional_groups"]["ester"]["present"] is True
+    # Should NOT be detected as ether
+    assert result_ester["functional_groups"]["ether"]["present"] is False
 
 def test_resolve_smiles_to_name():
     skill = ResolveSmilesToNameSkill()

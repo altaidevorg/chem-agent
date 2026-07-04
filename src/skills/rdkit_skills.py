@@ -853,7 +853,7 @@ class DetectFunctionalGroupsSkill(BaseSkill):
         "ketone": Chem.MolFromSmarts("[#6][CX3](=O)[#6]"),
         "aldehyde": Chem.MolFromSmarts("[CX3H1](=O)"),
         "ester": Chem.MolFromSmarts("[CX3](=O)[OX2H0][#6]"),
-        "ether": Chem.MolFromSmarts("[OD2]([#6])[#6]"),
+        "ether": Chem.MolFromSmarts("[OD2]([#6;!$(C(=O))])[#6;!$(C(=O))]"),
         "amide": Chem.MolFromSmarts("[CX3](=O)[NX3]"),
         "nitro": Chem.MolFromSmarts("[$([NX3](=O)=O),$([NX3+]([O-])=O)]"),
         "thiol": Chem.MolFromSmarts("[C,c][SH]")
