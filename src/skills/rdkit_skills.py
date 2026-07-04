@@ -2,6 +2,7 @@
 import os
 import urllib.request
 import urllib.parse
+from rdkit.Chem import inchi
 import json
 import sys
 import re
@@ -16,6 +17,8 @@ from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem import AllChem
 from rdkit.Chem import Draw, rdFMCS
 from src.skills.base import BaseSkill, SkillRegistry
+from rdkit.Chem import rdMolDescriptors
+
 
 # Redirect RDKit C++ warnings/errors to Python stream
 rdBase.WrapLogs()
@@ -390,14 +393,14 @@ class DeconstructCoreAndSidechainsSkill(BaseSkill):
             if core is None:
                 return {"error": f"Invalid core SMARTS/SMILES pattern: {core_smarts_or_smiles}"}
             
-            # Core yapısını molekülden kesip çıkarıyoruz (labelByIndex=True bağlantı atomu indeksini korur)
+            # Remove the core scaffold from the molecule (labelByIndex=True preserves the attachment index)
             with rdBase.BlockLogs():
                 sidechains_combined = Chem.ReplaceCore(mol, core, labelByIndex=True)
                 
             if sidechains_combined is None:
                 return {"error": "The specified core scaffold was not found within the target molecule."}
                 
-            # Kombine yan zincirleri tekil molekül fragmanlarına ayırıyoruz
+            # Separate the combined sidechains into individual molecule fragments
             frags = Chem.GetMolFrags(sidechains_combined, asMols=True)
             
             isolated_sidechains = []
@@ -658,6 +661,292 @@ class SidechainChecker:
                         stack.append(nbr)
         return True
 
+class CanonicalizeAndValidateSmilesSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "canonicalize_and_validate_smiles"
+
+    @property
+    def description(self) -> str:
+        return "Validates whether a given string is a valid SMILES and converts it into its unique canonical form. Use this to clean up user inputs before storing or comparing molecules."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The raw SMILES string to validate and canonicalize."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Validates and returns the canonical version of a SMILES string."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            
+            if mol is None:
+                return {
+                    "is_valid": False,
+                    "error": f"The provided string '{smiles}' is not a valid SMILES pattern.",
+                    "status": "fail"
+                }
+            
+            canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
+            return {
+                "is_valid": True,
+                "raw_smiles": smiles,
+                "canonical_smiles": canonical_smiles,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Validation failed due to a critical error: {str(e)}"}
+
+class GetMolecularFormulaAndChargeSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "get_molecular_formula_and_charge"
+
+    @property
+    def description(self) -> str:
+        return "Calculates the exact molecular formula (e.g., C6H12O6) and the total net formal charge of a molecule from its SMILES string."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Computes the chemical formula and net charge of a molecule."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES pattern: {smiles}"}
+            
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+            net_charge = Chem.GetFormalCharge(mol)
+            
+            return {
+                "smiles": smiles,
+                "molecular_formula": formula,
+                "net_charge": net_charge,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Failed to compute formula/charge: {str(e)}"}
+
+class ConvertSmilesToInchiSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "convert_smiles_to_inchi"
+
+    @property
+    def description(self) -> str:
+        return "Converts a standard SMILES string into IUPAC InChI and InChIKey identifiers. InChIKey is highly recommended for web-based database lookups."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule to convert."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Converts SMILES to InChI and InChIKey."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES pattern for InChI conversion: {smiles}"}
+       
+       
+            inchi_str = inchi.MolToInchi(mol) 
+            inchikey = inchi.InchiToInchiKey(inchi_str)
+            
+            return {
+                "smiles": smiles,
+                "inchi": inchi_str,
+                "inchikey": inchikey,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"InChI conversion failed: {str(e)}"}
+            
+class CountHeavyAtomsAndRingsSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "count_heavy_atoms_and_rings"
+
+    @property
+    def description(self) -> str:
+        return "Counts the number of heavy atoms (non-hydrogen atoms) and the total number of rings within a molecule from its SMILES string."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Calculates heavy atom count and total ring count for a molecule."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES pattern: {smiles}"}
+            
+            heavy_atoms = mol.GetNumHeavyAtoms()
+            ring_count = mol.GetRingInfo().NumRings()
+            
+            return {
+                "smiles": smiles,
+                "heavy_atom_count": heavy_atoms,
+                "total_ring_count": ring_count,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Failed to count atoms and rings: {str(e)}"}
+
+class DetectFunctionalGroupsSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "detect_functional_groups"
+
+    @property
+    def description(self) -> str:
+        return "Scans a molecule's SMILES string for basic functional groups like Alcohols, Carboxylic Acids, Amines, and Halogens using standard SMARTS patterns."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Detects presence and counts of basic functional groups using SMARTS matching."""
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES pattern: {smiles}"}
+            
+            # SMARTS definitions for basic functional groups
+            fg_patterns = {
+                # 1. Alcohols and Phenols (-OH)
+                "alcohol": "[C,c;!$(C(=O))][OH]",
+                
+                # 2. Carboxylic Acid (-COOH or deprotonated -COO-)
+                "carboxylic_acid": "C(=O)[OH,O-]",
+                
+                # 3. Amines (Primary, Secondary, Tertiary - Amides excluded)
+                "amine": "[NX3;H2,H1,H0;!$(N-C=O)]",
+                
+                # 4. Halogens (F, Cl, Br, I)
+                "halogen": "[F,Cl,Br,I]",
+                
+                # 5. Ketones (C=O between two carbons)
+                "ketone": "[#6][CX3](=O)[#6]",
+                
+                # 6. Aldehydes (Terminal C=O group)
+                "aldehyde": "[CX3H1](=O)",
+                
+                # 7. Esters (O-Carbon attached to carbonyl group)
+                "ester": "[CX3](=O)[OX2H0][#6]",
+                
+                # 8. Ethers (Oxygen between two carbons)
+                "ether": "[OD2]([#6])[#6]",
+                
+                # 9. Amides (Common linkage in medicinal chemistry, C(=O)N)
+                "amide": "[CX3](=O)[NX3]",
+                
+                # 10. Nitro Group (-NO2)
+                "nitro": "[$([NX3](=O)=O),$([NX3+]([O-])=O)]",
+                
+                # 11. Thiols / Mercaptans (-SH sulfur group)
+                "thiol": "[C,c][SH]"
+            }
+            
+            detected_groups = {}
+            for group_name, smarts in fg_patterns.items():
+                patt = Chem.MolFromSmarts(smarts)
+                matches = mol.GetSubstructMatches(patt)
+                detected_groups[group_name] = {
+                    "present": len(matches) > 0,
+                    "count": len(matches)
+                }
+                
+            return {
+                "smiles": smiles,
+                "functional_groups": detected_groups,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Functional group detection failed: {str(e)}"}
+
+class ResolveSmilesToNameSkill(BaseSkill):
+    @property
+    def name(self) -> str:
+        return "resolve_smiles_to_name"
+
+    @property
+    def description(self) -> str:
+        return "Queries the PubChem API using a SMILES string to find the common, commercial, or IUPAC name of the compound."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES string to resolve into a common name."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        """Resolves a SMILES string to its common title and IUPAC name via PubChem."""
+        try:
+            # Use strict encoding for SMILES to prevent characters from breaking the URL
+            safe_smiles = urllib.parse.quote(smiles, safe='')
+            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{safe_smiles}/property/Title,IUPACName/JSON"
+            
+            req = urllib.request.Request(url, headers={'User-Agent': 'ChemAgent/1.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                properties = data["PropertyTable"]["Properties"][0]
+                
+                common_name = properties.get("Title")
+                iupac_name = properties.get("IUPACName")
+                
+                if not common_name and not iupac_name:
+                    return {"error": f"No names found in PubChem for SMILES: {smiles}"}
+                    
+                return {
+                    "smiles": smiles,
+                    "common_name": common_name or "Unknown Common Name",
+                    "iupac_name": iupac_name or "Unknown IUPAC Name",
+                    "status": "success"
+                }
+        except Exception as e:
+            return {"error": f"Could not resolve SMILES to name via PubChem. Error: {str(e)}"}
+
 # Register all RDKit skills
 SkillRegistry.register(ResolveNameToSmilesSkill())
 SkillRegistry.register(CalculateMolecularPropertiesSkill())
@@ -669,6 +958,12 @@ SkillRegistry.register(SearchAdvancedSubstructureSkill())
 SkillRegistry.register(FindMaximumCommonSubstructureSkill())
 SkillRegistry.register(InterpretSmartsSkill())
 SkillRegistry.register(DeconstructCoreAndSidechainsSkill())
+SkillRegistry.register(CanonicalizeAndValidateSmilesSkill())
+SkillRegistry.register(GetMolecularFormulaAndChargeSkill())
+SkillRegistry.register(ConvertSmilesToInchiSkill())
+SkillRegistry.register(CountHeavyAtomsAndRingsSkill())
+SkillRegistry.register(DetectFunctionalGroupsSkill())
+SkillRegistry.register(ResolveSmilesToNameSkill())
 
 # Legacy functions kept for backward compatibility if needed, 
 # but the agent should now use SkillRegistry.
@@ -701,3 +996,21 @@ def interpret_smarts_pattern(smarts: str) -> dict:
 
 def deconstruct_core_and_sidechains(smiles: str, core_smarts_or_smiles: str) -> dict:
     return DeconstructCoreAndSidechainsSkill().execute(smiles, core_smarts_or_smiles)
+
+def canonicalize_and_validate_smiles(smiles: str) -> dict:
+    return CanonicalizeAndValidateSmilesSkill().execute(smiles)
+
+def get_molecular_formula_and_charge(smiles: str) -> dict:
+    return GetMolecularFormulaAndChargeSkill().execute(smiles)
+
+def convert_smiles_to_inchi(smiles: str) -> dict:
+    return ConvertSmilesToInchiSkill().execute(smiles)
+
+def count_heavy_atoms_and_rings(smiles: str) -> dict:
+    return CountHeavyAtomsAndRingsSkill().execute(smiles)
+
+def detect_functional_groups(smiles: str) -> dict:
+    return DetectFunctionalGroupsSkill().execute(smiles)
+
+def resolve_smiles_to_name(smiles: str) -> dict:
+    return ResolveSmilesToNameSkill().execute(smiles)

@@ -78,6 +78,13 @@ The agent is equipped with specialized "skills" that allow it to interact with c
 - **`search_advanced_substructure`**: Performs Markush-like matching with dynamic sidechain filtering (e.g., alkyl or all-carbon constraints).
 - **`find_maximum_common_substructure`**: Identifies the largest common atom/bond mapping (MCS) shared among a list of molecules, useful for pharmacophore detection.
 - **`interpret_smarts_pattern`**: Deconstructs complex SMARTS strings into human-readable atom counts and structural motifs (e.g., identifying benzene rings or carboxylic acids).
+- **`deconstruct_core_and_sidechains`**: Removes a specified core scaffold from a molecule to isolate its sidechains (R-groups).
+- **`canonicalize_and_validate_smiles`**: Validates SMILES strings and converts them into their unique canonical form.
+- **`get_molecular_formula_and_charge`**: Calculates the exact molecular formula and net formal charge of a compound.
+- **`convert_smiles_to_inchi`**: Converts SMILES strings into IUPAC InChI and InChIKey identifiers.
+- **`count_heavy_atoms_and_rings`**: Counts non-hydrogen atoms and total number of rings in a molecule.
+- **`detect_functional_groups`**: Scans for common functional groups (Alcohols, Amines, Acids, etc.) using SMARTS patterns.
+- **`resolve_smiles_to_name`**: Reverse-resolves a SMILES string into its common or IUPAC name via PubChem.
 
 ### System & File Operations
 - **`read_file`**: Extracts text from `.txt`, `.md`, `.json`, and even `.pdf` documents.

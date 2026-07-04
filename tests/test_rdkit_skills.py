@@ -5,8 +5,116 @@ from src.skills.rdkit_skills import (
     CalculateMolecularSimilaritySkill,
     FindMaximumCommonSubstructureSkill,
     InterpretSmartsSkill,
-    DeconstructCoreAndSidechainsSkill
+    DeconstructCoreAndSidechainsSkill,
+    GenerateMoleculeImageSkill,
+    FetchChemicalSafetyDataSkill,
+    SearchSubstructureSkill,
+    SearchAdvancedSubstructureSkill,
+    CanonicalizeAndValidateSmilesSkill,
+    GetMolecularFormulaAndChargeSkill,
+    ConvertSmilesToInchiSkill,
+    CountHeavyAtomsAndRingsSkill,
+    DetectFunctionalGroupsSkill,
+    ResolveSmilesToNameSkill
 )
+import os
+import shutil
+
+def test_generate_molecule_image():
+    skill = GenerateMoleculeImageSkill()
+    smiles = "CCO"
+    file_path = "output/test_ethanol.png"
+    
+    # Ensure output directory exists
+    os.makedirs("output", exist_ok=True)
+    
+    result = skill.execute(smiles=smiles, file_path=file_path)
+    assert result["status"] == "success"
+    assert os.path.exists(file_path)
+    
+    # Cleanup
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+def test_fetch_chemical_safety_data():
+    skill = FetchChemicalSafetyDataSkill()
+    # Test with a well-known molecule
+    result = skill.execute(molecule_name="Benzene")
+    assert "status" in result
+    if result.get("status") == "success":
+        assert "hazard_statements" in result
+        assert "signal_word" in result
+    else:
+        # PubChem API might be flaky or rate-limited in CI
+        assert "error" in result
+
+def test_search_substructure():
+    skill = SearchSubstructureSkill()
+    # Ethanol contains a C-O bond
+    result = skill.execute(smiles="CCO", pattern="CO")
+    assert result["has_match"] is True
+    assert result["match_count"] > 0
+
+def test_search_advanced_substructure():
+    skill = SearchAdvancedSubstructureSkill()
+    # Toluene (Cc1ccccc1) with benzene pattern and alkyl constraint on the methyl group? 
+    # Actually the constraint is on the pattern atom.
+    # Pattern: [c]C (benzene carbon attached to another carbon)
+    # Let's use a simpler one: C-C where the second C must be alkyl.
+    result = skill.execute(smiles="CCO", pattern="CC", constraint_atom_idx=1, query_type="alkyl")
+    assert result["total_filtered_matches"] > 0
+
+def test_canonicalize_and_validate_smiles():
+    skill = CanonicalizeAndValidateSmilesSkill()
+    # Non-canonical ethanol
+    result = skill.execute(smiles="OCC")
+    assert result["is_valid"] is True
+    assert result["canonical_smiles"] == "CCO"
+    
+    # Invalid SMILES
+    result_invalid = skill.execute(smiles="INVALID")
+    assert result_invalid["is_valid"] is False
+
+def test_get_molecular_formula_and_charge():
+    skill = GetMolecularFormulaAndChargeSkill()
+    # Ethanol: C2H6O
+    result = skill.execute(smiles="CCO")
+    assert result["status"] == "success"
+    assert "C2H6O" in result["molecular_formula"]
+    assert result["net_charge"] == 0
+
+def test_convert_smiles_to_inchi():
+    skill = ConvertSmilesToInchiSkill()
+    # Ethanol
+    result = skill.execute(smiles="CCO")
+    assert result["status"] == "success"
+    assert "InChI=" in result["inchi"]
+    assert result["inchikey"] is not None
+
+def test_count_heavy_atoms_and_rings():
+    skill = CountHeavyAtomsAndRingsSkill()
+    # Benzene: 6 heavy atoms, 1 ring
+    result = skill.execute(smiles="c1ccccc1")
+    assert result["status"] == "success"
+    assert result["heavy_atom_count"] == 6
+    assert result["total_ring_count"] == 1
+
+def test_detect_functional_groups():
+    skill = DetectFunctionalGroupsSkill()
+    # Ethanol has an alcohol group
+    result = skill.execute(smiles="CCO")
+    assert result["status"] == "success"
+    assert result["functional_groups"]["alcohol"]["present"] is True
+
+def test_resolve_smiles_to_name():
+    skill = ResolveSmilesToNameSkill()
+    # Ethanol SMILES
+    result = skill.execute(smiles="CCO")
+    assert "status" in result
+    if result.get("status") == "success":
+        assert "ethanol" in result["common_name"].lower() or "ethanol" in result["iupac_name"].lower()
+    else:
+        assert "error" in result
 
 def test_resolve_name_to_smiles():
     skill = ResolveNameToSmilesSkill()
