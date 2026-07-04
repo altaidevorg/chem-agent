@@ -1,23 +1,20 @@
 # src/skills/rdkit_skills.py
-import os
-import urllib.request
-import urllib.parse
-from rdkit.Chem import inchi
 import json
-import sys
+import os
 import re
-from io import StringIO
+import sys
+import urllib.parse
+import urllib.request
 from collections import deque
+from io import StringIO
 from typing import Any, Dict, List
-from rdkit import Chem
-from rdkit import rdBase
-from rdkit.Chem import Descriptors
-from rdkit import DataStructs
-from rdkit.Chem import rdFingerprintGenerator 
-from rdkit.Chem import AllChem
-from rdkit.Chem import Draw, rdFMCS
+
+from rdkit import Chem, DataStructs, rdBase
+from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors
+from rdkit.Chem import inchi
+from rdkit.Chem import rdFingerprintGenerator
+
 from src.skills.base import BaseSkill, SkillRegistry
-from rdkit.Chem import rdMolDescriptors
 
 
 # Redirect RDKit C++ warnings/errors to Python stream
@@ -59,7 +56,13 @@ class ResolveNameToSmilesSkill(BaseSkill):
             
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
-                properties = data["PropertyTable"]["Properties"][0]
+                property_table = data.get("PropertyTable", {})
+                properties_list = property_table.get("Properties", [])
+                
+                if not properties_list:
+                    return {"error": f"No properties found in PubChem response for '{molecule_name}'"}
+                
+                properties = properties_list[0]
                 
                 smiles = (properties.get("SMILES") or 
                           properties.get("ConnectivitySMILES") or 
@@ -851,7 +854,7 @@ class DetectFunctionalGroupsSkill(BaseSkill):
         "amine": Chem.MolFromSmarts("[NX3;H2,H1,H0;!$(N-C=O)]"),
         "halogen": Chem.MolFromSmarts("[F,Cl,Br,I]"),
         "ketone": Chem.MolFromSmarts("[#6][CX3](=O)[#6]"),
-        "aldehyde": Chem.MolFromSmarts("[CX3H1](=O)"),
+        "aldehyde": Chem.MolFromSmarts("[CX3H1,CX3H2](=O)"),
         "ester": Chem.MolFromSmarts("[CX3](=O)[OX2H0][#6]"),
         "ether": Chem.MolFromSmarts("[OD2]([#6;!$(C(=O))])[#6;!$(C(=O))]"),
         "amide": Chem.MolFromSmarts("[CX3](=O)[NX3]"),
@@ -941,7 +944,13 @@ class ResolveSmilesToNameSkill(BaseSkill):
             
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
-                properties = data["PropertyTable"]["Properties"][0]
+                property_table = data.get("PropertyTable", {})
+                properties_list = property_table.get("Properties", [])
+                
+                if not properties_list:
+                    return {"error": f"No names found in PubChem for SMILES: {smiles}"}
+                
+                properties = properties_list[0]
                 
                 common_name = properties.get("Title")
                 iupac_name = properties.get("IUPACName")

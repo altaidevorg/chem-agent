@@ -120,6 +120,11 @@ def test_detect_functional_groups():
     # Should NOT be detected as ether
     assert result_ester["functional_groups"]["ether"]["present"] is False
 
+    # 4. Formaldehyde (H2C=O) Test
+    result_formal = skill.execute(smiles="C=O")
+    assert result_formal["status"] == "success"
+    assert result_formal["functional_groups"]["aldehyde"]["present"] is True
+
 def test_resolve_smiles_to_name():
     skill = ResolveSmilesToNameSkill()
     # Ethanol SMILES
