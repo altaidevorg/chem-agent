@@ -173,13 +173,15 @@ class GenerateMoleculeImageSkill(BaseSkill):
             return {"error": f"Failed to generate molecule image: {str(e)}"}
 
 class FetchChemicalSafetyDataSkill(BaseSkill):
+    _GHS_DICTIONARY = None
+
     @property
     def name(self) -> str:
         return "fetch_chemical_safety_data"
 
     @property
     def description(self) -> str:
-        return "Retrieves official GHS hazardous classifications, hazard statement H-codes, precautionary statement P-codes, and the signal word for a chemical compound from PubChem."
+        return "Retrieves official GHS hazard classifications, hazard statement H-codes, precautionary statement P-codes, and the signal word for a chemical compound from PubChem."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -191,20 +193,55 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
             "required": ["molecule_name"]
         }
 
-    def execute(self, molecule_name: str) -> Dict[str, Any]:
-        """Uses PubChem PUG-VIEW API to fetch official GHS hazard classifications for a chemical compound using a robust POST request for CID lookup."""
+    def _ensure_dictionary_loaded(self) -> None:
+        """Lazily loads the GHS dictionary from PubChem on the first live execution run."""
+        if self._GHS_DICTIONARY is not None:
+            return
+        
         try:
-            # Step 1: Resolve name to CID using POST to handle special characters in names
-            cid_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/cids/JSON"
-            data_dict = {"name": molecule_name}
-            encoded_data = urllib.parse.urlencode(data_dict).encode("utf-8")
+            # Official source for GHS codes and descriptions from PubChem
+            url = "https://pubchem.ncbi.nlm.nih.gov/ghs/ghscode_11.txt"
+            req = urllib.request.Request(url, headers={'User-Agent': 'ChemAgent/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                # Use latin-1 encoding as PubChem TSV files often contain non-UTF-8 characters
+                content = response.read().decode('latin-1')
+                
+            new_dict = {}
+            for line in content.splitlines():
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    code = parts[0].strip()
+                    desc = parts[1].strip()
+                    
+                    if not code or not desc or desc == "Hazard Statement":
+                        continue
+                        
+                    # Match Hxxx or Pxxx (with optional suffixes like H360F or P301+P310)
+                    if re.match(r'^[HP]\d{3}', code):
+                        # Clean up description (remove (Deleted) or (Obsolete) tags)
+                        clean_desc = desc.replace('(Deleted)', '').replace('(Obsolete)', '').strip()
+                        if clean_desc:
+                            new_dict[code] = clean_desc
+                            # Also store numeric key for simple codes (e.g., "210" for "P210")
+                            if '+' not in code and len(code) >= 4:
+                                numeric_key = code[1:]
+                                if numeric_key not in new_dict:
+                                    new_dict[numeric_key] = clean_desc
             
-            req_cid = urllib.request.Request(
-                cid_url, 
-                data=encoded_data, 
-                headers={'User-Agent': 'ChemAgent/1.0'}
-            )
+            self._GHS_DICTIONARY = new_dict
+        except Exception:
+            # Fallback to empty dict if network is down or URL changes
+            self._GHS_DICTIONARY = {}
+
+    def execute(self, molecule_name: str) -> Dict[str, Any]:
+        """Uses PubChem PUG-VIEW API and cross-references the live GHS dictionary mapping."""
+        try:
+            self._ensure_dictionary_loaded()
             
+            safe_name = urllib.parse.quote(molecule_name)
+            cid_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{safe_name}/cids/JSON"
+            
+            req_cid = urllib.request.Request(cid_url, headers={'User-Agent': 'ChemAgent/1.0'})
             try:
                 with urllib.request.urlopen(req_cid, timeout=5) as response:
                     cid_data = json.loads(response.read().decode('utf-8'))
@@ -212,7 +249,6 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
             except Exception:
                 return {"error": f"Could not find verified PubChem CID for molecule name '{molecule_name}'."}
                 
-            # Step 2: Fetch safety data using PUG-VIEW (PUG-VIEW uses CID in path)
             safety_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/{cid}/JSON?heading=Safety+and+Hazards"
             req_safety = urllib.request.Request(safety_url, headers={'User-Agent': 'ChemAgent/1.0'})
             
@@ -251,7 +287,7 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
             _collect_strings_recursively(target_node, raw_strings)
             
             hazard_statements = []
-            precautionary_statements = []
+            precautionary_blocks = []
             signal_word = "Not Classified / Unknown"
             
             for s in raw_strings:
@@ -269,18 +305,41 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
                         hazard_statements.append(s_clean)
                         
                 if re.match(r'^P\d{3}', s_clean) or (':' in s_clean and re.search(r'\bP\d{3}\b', s_clean)):
-                    if len(s_clean) < 250 and s_clean not in precautionary_statements:
-                        precautionary_statements.append(s_clean)
+                    if len(s_clean) < 250 and s_clean not in precautionary_blocks:
+                        precautionary_blocks.append(s_clean)
                         
             hazard_statements.sort()
-            precautionary_statements.sort()
+            
+            resolved_precautionary = []
+            for p_block in precautionary_blocks:
+                found_codes = re.findall(r'P\d{3}(?:\+P\d{3})*', p_block)
+                
+                for code in found_codes:
+                    sub_codes = code.split('+')
+                    sub_descriptions = []
+                    
+                    for sub_code in sub_codes:
+                        numeric_key = sub_code[1:] if sub_code.startswith('P') else sub_code
+                        # Bulletproof lookup trying both raw string and numeric string variants
+                        desc = self._GHS_DICTIONARY.get(sub_code) or self._GHS_DICTIONARY.get(numeric_key)
+                        if desc:
+                            sub_descriptions.append(desc.strip())
+                    
+                    if sub_descriptions:
+                        description = " / ".join(sub_descriptions)
+                    else:
+                        description = "Official safety statement description unavailable."
+                        
+                    resolved_line = f"{code}: {description}"
+                    if resolved_line not in resolved_precautionary:
+                        resolved_precautionary.append(resolved_line)
             
             return {
                 "molecule_name": molecule_name,
                 "cid": int(cid),
                 "signal_word": signal_word,
                 "hazard_statements": hazard_statements if hazard_statements else ["No explicit hazardous statements found."],
-                "precautionary_statements": precautionary_statements if precautionary_statements else ["No explicit precautionary statements found."],
+                "precautionary_statements": resolved_precautionary if resolved_precautionary else ["No explicit precautionary statements found."],
                 "status": "success"
             }
         except Exception as e:
@@ -293,35 +352,47 @@ class SearchSubstructureSkill(BaseSkill):
 
     @property
     def description(self) -> str:
-        return "Searches for a basic substructure or SMARTS pattern within a target molecule."
+        return "Searches for a specific substructure or SMARTS pattern within a target molecule, with optional strict stereochemistry/chirality matching."
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
-                "pattern": {"type": "string", "description": "The SMARTS or SMILES pattern to find."}
+                "smiles": {
+                    "type": "string", 
+                    "description": "The SMILES representation of the target molecule to search within."
+                },
+                "pattern": {
+                    "type": "string", 
+                    "description": "The SMARTS or SMILES pattern to look for inside the target molecule."
+                },
+                "chirality_enforced": {
+                    "type": "boolean", 
+                    "description": "Set to true to strictly match stereochemical configurations and tetrahedral chiral centers. Defaults to false."
+                }
             },
-            "required": ["smiles", "pattern"]
+            "required": ["smiles", "pattern", "chirality_enforced"]
         }
 
-    def execute(self, smiles: str, pattern: str, use_chirality: bool = False) -> Dict[str, Any]:
-        """Checks if a specific substructure pattern (SMILES or SMARTS) exists within a target molecule."""
+    def execute(self, smiles: str, pattern: str, chirality_enforced: bool = False) -> Dict[str, Any]:
+        """Checks if a specific substructure pattern exists within a target molecule using RDKit."""
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return {"error": f"Invalid target SMILES: {smiles}"}
             
+            # Attempt to parse as SMARTS first, fallback to SMILES if necessary
             patt = Chem.MolFromSmarts(pattern)
             if patt is None:
                 patt = Chem.MolFromSmiles(pattern)
                 if patt is None:
                     return {"error": f"Invalid substructure pattern (not valid SMARTS/SMILES): {pattern}"}
             
-            has_match = mol.HasSubstructMatch(patt, useChirality=use_chirality)
-            matches = mol.GetSubstructMatches(patt, useChirality=use_chirality)
+            # Execute RDKit substructure matching with strict chirality flag
+            has_match = mol.HasSubstructMatch(patt, useChirality=chirality_enforced)
+            matches = mol.GetSubstructMatches(patt, useChirality=chirality_enforced)
             
             return {
                 "target_smiles": smiles,
@@ -329,11 +400,13 @@ class SearchSubstructureSkill(BaseSkill):
                 "has_match": has_match,
                 "match_count": len(matches),
                 "atom_indices": [list(match) for match in matches],
-                "chirality_enforced": use_chirality
+                "chirality_enforced": chirality_enforced,
+                "status": "success"
             }
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": f"Substructure search failed: {str(e)}"}
 
+            
 class CalculateMolecularSimilaritySkill(BaseSkill):
     @property
     def name(self) -> str:
@@ -578,13 +651,28 @@ class FindMaximumCommonSubstructureSkill(BaseSkill):
             return {"error": f"MCS calculation failed: {str(e)}"}
 
 class InterpretSmartsSkill(BaseSkill):
+    # Pure topological registry (No valence/implicit H primitives to prevent C++ crashes)
+    # The size-based overlap engine handles structural differentiation automatically.
+    _FUNCTIONAL_GROUPS = {
+        "Propionic acid backbone": "CCC(=O)O",
+        "Ester group": "C(=O)O[#6]",
+        "Carboxylic acid group": "C(=O)O",
+        "Amide group": "C(=O)N",
+        "Nitro group": "N(=O)=O",
+        "Nitrile group": "C#N",
+        "Carbonyl group": "C=O",
+        "Amine group": "N-[#6]",
+        "Ether linkage": "O-[#6]",
+        "Thiol group": "S-[#6]"
+    }
+
     @property
     def name(self) -> str:
         return "interpret_smarts_pattern"
 
     @property
     def description(self) -> str:
-        return "Deconstructs a SMARTS string into a human-readable structural description. Use this to verify your understanding of a substructure pattern before reporting it to the user."
+        return "Deconstructs a SMARTS string into a human-readable structural description by safely analyzing atomic topology."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -597,7 +685,7 @@ class InterpretSmartsSkill(BaseSkill):
         }
 
     def execute(self, smarts: str) -> Dict[str, Any]:
-        """Provides a breakdown of a SMARTS pattern by counting atom types and identifying structural motifs."""
+        """Deconstructs SMARTS strings using non-destructive topological graph isomorphism."""
         try:
             with rdBase.BlockLogs():
                 query = Chem.MolFromSmarts(smarts)
@@ -607,21 +695,24 @@ class InterpretSmartsSkill(BaseSkill):
 
             Chem.FastFindRings(query)
 
+            # 1. Bulletproof Atomic Number Counting Engine
             atom_counts = {}
             for atom in query.GetAtoms():
-                symbol = atom.GetSymbol() if atom.GetSymbol() != "*" else f"Type_{atom.GetAtomicNum()}"
-                if atom.GetAtomicNum() == 6: symbol = "Carbon"
-                elif atom.GetAtomicNum() == 8: symbol = "Oxygen"
-                elif atom.GetAtomicNum() == 7: symbol = "Nitrogen"
-                elif atom.GetAtomicNum() == 16: symbol = "Sulfur"
-                elif atom.GetAtomicNum() == 9: symbol = "Fluorine"
-                elif atom.GetAtomicNum() == 17: symbol = "Chlorine"
+                atomic_num = atom.GetAtomicNum()
+                if atomic_num == 6: symbol = "Carbon"
+                elif atomic_num == 8: symbol = "Oxygen"
+                elif atomic_num == 7: symbol = "Nitrogen"
+                elif atomic_num == 16: symbol = "Sulfur"
+                elif atomic_num == 9: symbol = "Fluorine"
+                elif atomic_num == 17: symbol = "Chlorine"
+                elif atomic_num == 0: symbol = "Generic/Wildcard"
+                else: symbol = f"Element_{atomic_num}"
                 
                 atom_counts[symbol] = atom_counts.get(symbol, 0) + 1
 
             num_rings = query.GetRingInfo().NumRings()
             
-            # Identify specific motifs
+            # 2. Native Benzene Ring Detector
             motifs = []
             ring_info = query.GetRingInfo()
             for ring in ring_info.AtomRings():
@@ -629,25 +720,46 @@ class InterpretSmartsSkill(BaseSkill):
                     if all(query.GetAtomWithIdx(i).GetIsAromatic() and query.GetAtomWithIdx(i).GetAtomicNum() == 6 for i in ring):
                         motifs.append("Benzene ring")
                         break
+
+            # 3. Size-Based Hierarchical Overlap Suppression Engine
+            compiled_registry = []
+            for name, smarts_str in self._FUNCTIONAL_GROUPS.items():
+                patt = Chem.MolFromSmarts(smarts_str)
+                if patt:
+                    compiled_registry.append({
+                        "name": name,
+                        "patt": patt,
+                        "size": patt.GetNumAtoms()
+                    })
             
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)O")): 
-                motifs.append("Carboxylic acid group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C(=O)N")): 
-                motifs.append("Amide group")
-            if query.HasSubstructMatch(Chem.MolFromSmarts("C-C-C(=O)O")): 
-                motifs.append("Propionic acid backbone")
+            # Sort strictly by size descending (Ester size 4 > Carboxylic acid size 3)
+            compiled_registry.sort(key=lambda x: x["size"], reverse=True)
+            
+            claimed_atoms = set()
+            for motif in compiled_registry:
+                matches = query.GetSubstructMatches(motif["patt"])
+                if not matches:
+                    continue
+                
+                for match in matches:
+                    match_set = set(match)
+                    # Claim sub-graphs safely without querying atomic implicit valence states
+                    if not match_set.issubset(claimed_atoms):
+                        if motif["name"] not in motifs:
+                            motifs.append(motif["name"])
+                        claimed_atoms.update(match_set)
 
             return {
                 "smarts": smarts,
                 "total_atoms": query.GetNumAtoms(),
                 "atom_breakdown": atom_counts,
                 "ring_count": num_rings,
-                "identified_motifs": motifs,
+                "identified_motifs": sorted(motifs),
                 "status": "success"
             }
         except Exception as e:
             return {"error": f"SMARTS interpretation failed: {str(e)}"}
-
+            
 class SidechainChecker:
     matchers = {
         'alkyl': lambda at: not at.GetIsAromatic(),
