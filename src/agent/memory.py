@@ -70,7 +70,12 @@ class AgentMemory:
         threshold = MAX_CONTEXT_TOKENS * COMPACTION_THRESHOLD
 
         if total_tokens > threshold:
-            print(f"[Memory] ⚠️ Token count ({total_tokens}) exceeded threshold ({threshold}). Compacting...")
+            # Log compaction start to telemetry instead of terminal
+            agent._write_telemetry("memory_compaction_triggered", {
+                "total_tokens": total_tokens,
+                "threshold": threshold,
+                "session_id": self.session_id
+            })
             
             # 1. First attempt: Prune tool results
             self.compact_tool_results()
@@ -78,7 +83,10 @@ class AgentMemory:
             # Re-check tokens
             total_tokens = self.get_total_tokens(system_prompt)
             if total_tokens <= threshold:
-                print(f"[Memory] ✅ Compaction successful via tool pruning. New count: {total_tokens}")
+                agent._write_telemetry("memory_compaction_success", {
+                    "method": "tool_pruning",
+                    "new_token_count": total_tokens
+                })
                 return
 
             # 2. Second attempt: Summarize old history
@@ -116,7 +124,9 @@ class AgentMemory:
                         break
                 
                 if split_idx <= 0:
-                    print("[Memory] ⚠️ Could not find a safe split point for compaction. Skipping summarization.")
+                    agent._write_telemetry("memory_compaction_failed", {
+                        "reason": "no_safe_split_point"
+                    })
                     return
 
                 to_summarize = self.messages[:split_idx]
@@ -148,12 +158,15 @@ class AgentMemory:
                         {"role": "system", "content": f"[CONVERSATION SUMMARY]: {self.summary}"}
                     ] + keep_verbatim
                     
-                    print(f"[Memory] ✅ Compaction successful via summarization. New count: {self.get_total_tokens(system_prompt)}")
+                    agent._write_telemetry("memory_compaction_success", {
+                        "method": "summarization",
+                        "new_token_count": self.get_total_tokens(system_prompt)
+                    })
                 except Exception as e:
-                    print(f"[Memory Error] Failed to summarize: {e}")
+                    agent._write_telemetry("memory_compaction_error", {
+                        "error": str(e)
+                    })
                     # Fallback: Drop the oldest message and try to find a safe state
-                    # Instead of just dropping 2, we drop 1 and let the next turn try again
-                    # or we could find the first safe split point from the beginning.
                     if len(self.messages) > 2:
                         self.messages = self.messages[1:]
                         # Ensure we don't start with a tool message

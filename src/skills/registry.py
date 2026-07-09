@@ -51,7 +51,7 @@ class SkillRegistry:
             body_str = parts[2].strip()
             metadata = yaml.safe_load(frontmatter_str)
 
-            if not metadata or 'name' not in metadata or 'description' not in metadata:
+            if not isinstance(metadata, dict) or 'name' not in metadata or 'description' not in metadata:
                 print(f"[SkillRegistry] Warning: Missing required fields in frontmatter of {path}")
                 return None
 
