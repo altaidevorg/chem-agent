@@ -1,0 +1,3 @@
+{"sensor_id": "T-101", "type": "temperature", "unit": "Celsius", "location": "Reactor R-101", "calibration_date": "2026-01-15"}
+{"sensor_id": "P-101", "type": "pressure", "unit": "bar", "location": "Reactor R-101", "calibration_date": "2026-02-20"}
+{"sensor_id": "F-101", "type": "flow", "unit": "L/min", "location": "Inlet Pipe A", "calibration_date": "2026-03-10"}

@@ -1,18 +1,18 @@
-# src/skills/file_skills.py
+# src/tools/file_tools.py
 import json
 import os
 from typing import Any, Dict
 from pypdf import PdfReader
-from src.skills.base import BaseSkill, SkillRegistry
+from src.tools.base import BaseTool, ToolRegistry
 
-class ReadFileSkill(BaseSkill):
+class ReadFileTool(BaseTool):
     @property
     def name(self) -> str:
         return "read_file"
 
     @property
     def description(self) -> str:
-        return "Reads and returns the complete text or data content from a local file (.txt, .md, .json, or .pdf). Use this to inspect datasets, input sheets, or documents provided by the user."
+        return "Reads and returns the complete text or data content from a local file (.txt, .md, .json, .csv, .jsonl, or .pdf). Use this to inspect datasets, input sheets, or documents provided by the user."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -28,14 +28,14 @@ class ReadFileSkill(BaseSkill):
         }
 
     def execute(self, file_path: str) -> Dict[str, Any]:
-        """Reads the content of a local file. Supports .txt, .md, .json, and .pdf formats."""
+        """Reads the content of a local file. Supports .txt, .md, .json, .csv, .jsonl, and .pdf formats."""
         if not os.path.exists(file_path):
             return {"error": f"File not found at local path: {file_path}"}
         
         _, ext = os.path.splitext(file_path.lower())
         
         try:
-            if ext in ['.txt', '.md']:
+            if ext in ['.txt', '.md', '.csv']:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     return {"file_path": file_path, "format": ext, "content": f.read()}
             
@@ -43,6 +43,14 @@ class ReadFileSkill(BaseSkill):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     return {"file_path": file_path, "format": ".json", "content": data}
+
+            elif ext == '.jsonl':
+                data = []
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            data.append(json.loads(line))
+                return {"file_path": file_path, "format": ".jsonl", "content": data}
             
             elif ext == '.pdf':
                 reader = PdfReader(file_path)
@@ -59,7 +67,7 @@ class ReadFileSkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
-class WriteFileSkill(BaseSkill):
+class WriteFileTool(BaseTool):
     @property
     def name(self) -> str:
         return "write_file"
@@ -103,13 +111,13 @@ class WriteFileSkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
-# Register file skills
-SkillRegistry.register(ReadFileSkill())
-SkillRegistry.register(WriteFileSkill())
+# Register file tools
+ToolRegistry.register(ReadFileTool())
+ToolRegistry.register(WriteFileTool())
 
 # Legacy functions for backward compatibility
 def read_file(file_path: str) -> dict:
-    return ReadFileSkill().execute(file_path)
+    return ReadFileTool().execute(file_path)
 
 def write_file(file_path: str, content: str) -> dict:
-    return WriteFileSkill().execute(file_path, content)
+    return WriteFileTool().execute(file_path, content)

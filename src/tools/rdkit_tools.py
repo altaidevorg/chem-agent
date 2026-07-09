@@ -1,4 +1,4 @@
-# src/skills/rdkit_skills.py
+# src/tools/rdkit_tools.py
 import json
 import os
 import re
@@ -14,13 +14,13 @@ from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors
 from rdkit.Chem import inchi
 from rdkit.Chem import rdFingerprintGenerator
 
-from src.skills.base import BaseSkill, SkillRegistry
+from src.tools.base import BaseTool, ToolRegistry
 
 
 # Redirect RDKit C++ warnings/errors to Python stream
 rdBase.WrapLogs()
 
-class ResolveNameToSmilesSkill(BaseSkill):
+class ResolveNameToSmilesTool(BaseTool):
     @property
     def name(self) -> str:
         return "resolve_name_to_smiles"
@@ -80,7 +80,7 @@ class ResolveNameToSmilesSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Could not resolve molecule name '{molecule_name}' to SMILES via PubChem. Error: {str(e)}"}
 
-class CalculateMolecularPropertiesSkill(BaseSkill):
+class CalculateMolecularPropertiesTool(BaseTool):
     @property
     def name(self) -> str:
         return "calculate_molecular_properties"
@@ -128,7 +128,7 @@ class CalculateMolecularPropertiesSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Critical error during molecular property calculation: {str(e)}"}
 
-class GenerateMoleculeImageSkill(BaseSkill):
+class GenerateMoleculeImageTool(BaseTool):
     @property
     def name(self) -> str:
         return "generate_molecule_image"
@@ -172,7 +172,7 @@ class GenerateMoleculeImageSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Failed to generate molecule image: {str(e)}"}
 
-class FetchChemicalSafetyDataSkill(BaseSkill):
+class FetchChemicalSafetyDataTool(BaseTool):
     _GHS_DICTIONARY = None
 
     @property
@@ -345,7 +345,7 @@ class FetchChemicalSafetyDataSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Failed to parse chemical safety dossier: {str(e)}"}
 
-class SearchSubstructureSkill(BaseSkill):
+class SearchSubstructureTool(BaseTool):
     @property
     def name(self) -> str:
         return "search_substructure"
@@ -407,7 +407,7 @@ class SearchSubstructureSkill(BaseSkill):
             return {"error": f"Substructure search failed: {str(e)}"}
 
             
-class CalculateMolecularSimilaritySkill(BaseSkill):
+class CalculateMolecularSimilarityTool(BaseTool):
     @property
     def name(self) -> str:
         return "calculate_molecular_similarity"
@@ -452,7 +452,7 @@ class CalculateMolecularSimilaritySkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
-class DeconstructCoreAndSidechainsSkill(BaseSkill):
+class DeconstructCoreAndSidechainsTool(BaseTool):
     @property
     def name(self) -> str:
         return "deconstruct_core_and_sidechains"
@@ -510,7 +510,7 @@ class DeconstructCoreAndSidechainsSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Core deconstruction failed: {str(e)}"}
 
-class SearchAdvancedSubstructureSkill(BaseSkill):
+class SearchAdvancedSubstructureTool(BaseTool):
     @property
     def name(self) -> str:
         return "search_advanced_substructure"
@@ -572,7 +572,7 @@ class SearchAdvancedSubstructureSkill(BaseSkill):
         except Exception as e:
             return {"error": str(e)}
 
-class FindMaximumCommonSubstructureSkill(BaseSkill):
+class FindMaximumCommonSubstructureTool(BaseTool):
     @property
     def name(self) -> str:
         return "find_maximum_common_substructure"
@@ -650,7 +650,7 @@ class FindMaximumCommonSubstructureSkill(BaseSkill):
         except Exception as e:
             return {"error": f"MCS calculation failed: {str(e)}"}
 
-class InterpretSmartsSkill(BaseSkill):
+class InterpretSmartsTool(BaseTool):
     # Pure topological registry (No valence/implicit H primitives to prevent C++ crashes)
     # The size-based overlap engine handles structural differentiation automatically.
     _FUNCTIONAL_GROUPS = {
@@ -792,7 +792,7 @@ class SidechainChecker:
                         stack.append(nbr)
         return True
 
-class CanonicalizeAndValidateSmilesSkill(BaseSkill):
+class CanonicalizeAndValidateSmilesTool(BaseTool):
     @property
     def name(self) -> str:
         return "canonicalize_and_validate_smiles"
@@ -834,7 +834,7 @@ class CanonicalizeAndValidateSmilesSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Validation failed due to a critical error: {str(e)}"}
 
-class GetMolecularFormulaAndChargeSkill(BaseSkill):
+class GetMolecularFormulaAndChargeTool(BaseTool):
     @property
     def name(self) -> str:
         return "get_molecular_formula_and_charge"
@@ -873,7 +873,7 @@ class GetMolecularFormulaAndChargeSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Failed to compute formula/charge: {str(e)}"}
 
-class ConvertSmilesToInchiSkill(BaseSkill):
+class ConvertSmilesToInchiTool(BaseTool):
     @property
     def name(self) -> str:
         return "convert_smiles_to_inchi"
@@ -919,7 +919,7 @@ class ConvertSmilesToInchiSkill(BaseSkill):
         except Exception as e:
             return {"error": f"InChI conversion failed due to a critical error: {str(e)}"}
             
-class CountHeavyAtomsAndRingsSkill(BaseSkill):
+class CountHeavyAtomsAndRingsTool(BaseTool):
     @property
     def name(self) -> str:
         return "count_heavy_atoms_and_rings"
@@ -958,7 +958,7 @@ class CountHeavyAtomsAndRingsSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Failed to count atoms and rings: {str(e)}"}
 
-class DetectFunctionalGroupsSkill(BaseSkill):
+class DetectFunctionalGroupsTool(BaseTool):
     # Pre-compile static SMARTS patterns at the class level for performance (runs only once)
     _FG_PATTERNS = {
         "alcohol": Chem.MolFromSmarts("[C,c;!$(C(=O))][OH]"),
@@ -1019,7 +1019,7 @@ class DetectFunctionalGroupsSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Functional group detection failed: {str(e)}"}
 
-class ResolveSmilesToNameSkill(BaseSkill):
+class ResolveSmilesToNameTool(BaseTool):
     @property
     def name(self) -> str:
         return "resolve_smiles_to_name"
@@ -1079,70 +1079,70 @@ class ResolveSmilesToNameSkill(BaseSkill):
         except Exception as e:
             return {"error": f"Could not resolve SMILES to name via PubChem. Error: {str(e)}"}
 
-# Register all RDKit skills
-SkillRegistry.register(ResolveNameToSmilesSkill())
-SkillRegistry.register(CalculateMolecularPropertiesSkill())
-SkillRegistry.register(GenerateMoleculeImageSkill())
-SkillRegistry.register(FetchChemicalSafetyDataSkill())
-SkillRegistry.register(SearchSubstructureSkill())
-SkillRegistry.register(CalculateMolecularSimilaritySkill())
-SkillRegistry.register(SearchAdvancedSubstructureSkill())
-SkillRegistry.register(FindMaximumCommonSubstructureSkill())
-SkillRegistry.register(InterpretSmartsSkill())
-SkillRegistry.register(DeconstructCoreAndSidechainsSkill())
-SkillRegistry.register(CanonicalizeAndValidateSmilesSkill())
-SkillRegistry.register(GetMolecularFormulaAndChargeSkill())
-SkillRegistry.register(ConvertSmilesToInchiSkill())
-SkillRegistry.register(CountHeavyAtomsAndRingsSkill())
-SkillRegistry.register(DetectFunctionalGroupsSkill())
-SkillRegistry.register(ResolveSmilesToNameSkill())
+# Register all RDKit tools
+ToolRegistry.register(ResolveNameToSmilesTool())
+ToolRegistry.register(CalculateMolecularPropertiesTool())
+ToolRegistry.register(GenerateMoleculeImageTool())
+ToolRegistry.register(FetchChemicalSafetyDataTool())
+ToolRegistry.register(SearchSubstructureTool())
+ToolRegistry.register(CalculateMolecularSimilarityTool())
+ToolRegistry.register(SearchAdvancedSubstructureTool())
+ToolRegistry.register(FindMaximumCommonSubstructureTool())
+ToolRegistry.register(InterpretSmartsTool())
+ToolRegistry.register(DeconstructCoreAndSidechainsTool())
+ToolRegistry.register(CanonicalizeAndValidateSmilesTool())
+ToolRegistry.register(GetMolecularFormulaAndChargeTool())
+ToolRegistry.register(ConvertSmilesToInchiTool())
+ToolRegistry.register(CountHeavyAtomsAndRingsTool())
+ToolRegistry.register(DetectFunctionalGroupsTool())
+ToolRegistry.register(ResolveSmilesToNameTool())
 
 # Legacy functions kept for backward compatibility if needed, 
-# but the agent should now use SkillRegistry.
+# but the agent should now use ToolRegistry.
 def calculate_molecular_properties(smiles: str) -> dict:
-    return CalculateMolecularPropertiesSkill().execute(smiles)
+    return CalculateMolecularPropertiesTool().execute(smiles)
 
 def generate_molecule_image(smiles: str, file_path: str) -> dict:
-    return GenerateMoleculeImageSkill().execute(smiles, file_path)
+    return GenerateMoleculeImageTool().execute(smiles, file_path)
 
 def fetch_chemical_safety_data(molecule_name: str) -> dict:
-    return FetchChemicalSafetyDataSkill().execute(molecule_name)
+    return FetchChemicalSafetyDataTool().execute(molecule_name)
 
 def resolve_name_to_smiles(molecule_name: str) -> dict:
-    return ResolveNameToSmilesSkill().execute(molecule_name)
+    return ResolveNameToSmilesTool().execute(molecule_name)
 
 def search_substructure(smiles: str, pattern: str, use_chirality: bool = False) -> dict:
-    return SearchSubstructureSkill().execute(smiles, pattern, use_chirality)
+    return SearchSubstructureTool().execute(smiles, pattern, use_chirality)
 
 def calculate_molecular_similarity(smiles1: str, smiles2: str) -> dict:
-    return CalculateMolecularSimilaritySkill().execute(smiles1, smiles2)
+    return CalculateMolecularSimilarityTool().execute(smiles1, smiles2)
 
 def search_advanced_substructure(smiles: str, pattern: str, constraint_atom_idx: int, query_type: str) -> dict:
-    return SearchAdvancedSubstructureSkill().execute(smiles, pattern, constraint_atom_idx, query_type)
+    return SearchAdvancedSubstructureTool().execute(smiles, pattern, constraint_atom_idx, query_type)
 
 def find_maximum_common_substructure(smiles_list: List[str], ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> dict:
-    return FindMaximumCommonSubstructureSkill().execute(smiles_list, ring_matches_ring_only, complete_rings_only)
+    return FindMaximumCommonSubstructureTool().execute(smiles_list, ring_matches_ring_only, complete_rings_only)
 
 def interpret_smarts_pattern(smarts: str) -> dict:
-    return InterpretSmartsSkill().execute(smarts)
+    return InterpretSmartsTool().execute(smarts)
 
 def deconstruct_core_and_sidechains(smiles: str, core_smarts_or_smiles: str) -> dict:
-    return DeconstructCoreAndSidechainsSkill().execute(smiles, core_smarts_or_smiles)
+    return DeconstructCoreAndSidechainsTool().execute(smiles, core_smarts_or_smiles)
 
 def canonicalize_and_validate_smiles(smiles: str) -> dict:
-    return CanonicalizeAndValidateSmilesSkill().execute(smiles)
+    return CanonicalizeAndValidateSmilesTool().execute(smiles)
 
 def get_molecular_formula_and_charge(smiles: str) -> dict:
-    return GetMolecularFormulaAndChargeSkill().execute(smiles)
+    return GetMolecularFormulaAndChargeTool().execute(smiles)
 
 def convert_smiles_to_inchi(smiles: str) -> dict:
-    return ConvertSmilesToInchiSkill().execute(smiles)
+    return ConvertSmilesToInchiTool().execute(smiles)
 
 def count_heavy_atoms_and_rings(smiles: str) -> dict:
-    return CountHeavyAtomsAndRingsSkill().execute(smiles)
+    return CountHeavyAtomsAndRingsTool().execute(smiles)
 
 def detect_functional_groups(smiles: str) -> dict:
-    return DetectFunctionalGroupsSkill().execute(smiles)
+    return DetectFunctionalGroupsTool().execute(smiles)
 
 def resolve_smiles_to_name(smiles: str) -> dict:
-    return ResolveSmilesToNameSkill().execute(smiles)
+    return ResolveSmilesToNameTool().execute(smiles)

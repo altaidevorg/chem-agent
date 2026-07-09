@@ -1,0 +1,16 @@
+[
+  {
+    "incident_id": "INC-2026-001",
+    "date": "2026-06-12",
+    "type": "Near Miss",
+    "description": "Small leak detected on valve V-102 during startup. Valve tightened immediately.",
+    "severity": "Low"
+  },
+  {
+    "incident_id": "INC-2026-002",
+    "date": "2026-06-25",
+    "type": "Equipment Failure",
+    "description": "Pump P-301 motor overheated and tripped. Spare pump activated.",
+    "severity": "Medium"
+  }
+]

@@ -1,0 +1,5 @@
+[
+  {"name": "Aspirin", "smiles": "CC(=O)OC1=CC=CC=C1C(=O)O", "quantity_kg": 50, "purity": 0.99},
+  {"name": "Ibuprofen", "smiles": "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O", "quantity_kg": 120, "purity": 0.98},
+  {"name": "Acetone", "smiles": "CC(=O)C", "quantity_kg": 500, "purity": 0.995}
+]

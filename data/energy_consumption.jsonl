@@ -1,0 +1,6 @@
+{"timestamp": "2026-07-09T00:00:00", "section": "Reactor-A", "electricity_kwh": 45.5, "steam_kg": 120, "water_m3": 2.5}
+{"timestamp": "2026-07-09T01:00:00", "section": "Reactor-A", "electricity_kwh": 48.2, "steam_kg": 135, "water_m3": 2.6}
+{"timestamp": "2026-07-09T08:00:00", "section": "Reactor-A", "electricity_kwh": 55.0, "steam_kg": 210, "water_m3": 3.0}
+{"timestamp": "2026-07-09T09:00:00", "section": "Reactor-A", "electricity_kwh": 58.5, "steam_kg": 250, "water_m3": 3.2}
+{"timestamp": "2026-07-09T00:00:00", "section": "Distillation-B", "electricity_kwh": 32.1, "steam_kg": 450, "water_m3": 8.2}
+{"timestamp": "2026-07-09T01:00:00", "section": "Distillation-B", "electricity_kwh": 33.5, "steam_kg": 465, "water_m3": 8.5}

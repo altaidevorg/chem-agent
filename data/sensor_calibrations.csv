@@ -1,0 +1,5 @@
+sensor_id,last_calibration,next_due,status,technician
+T-101,2026-01-15,2026-07-15,Active,Alice
+P-101,2025-12-20,2026-06-20,Overdue,Alice
+F-101,2026-03-10,2026-09-10,Active,Bob
+T-202,2026-05-05,2026-11-05,Active,Bob

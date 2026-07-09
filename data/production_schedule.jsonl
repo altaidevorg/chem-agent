@@ -1,0 +1,2 @@
+{"job_id": "J101", "product": "Ethanol", "planned_start": "2026-07-09T08:00:00", "actual_start": "2026-07-09T08:15:00", "planned_duration_h": 4.0, "actual_duration_h": 4.5}
+{"job_id": "J102", "product": "Methanol", "planned_start": "2026-07-09T13:00:00", "actual_start": "2026-07-09T13:05:00", "planned_duration_h": 3.5, "actual_duration_h": 3.2}
