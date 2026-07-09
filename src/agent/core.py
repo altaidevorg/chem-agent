@@ -6,13 +6,15 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from src.vllm_client import get_vllm_client
-from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR
+from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR
 from src.agent.prompts import SYSTEM_PROMPT
 from src.agent.memory import AgentMemory
-from src.skills.base import SkillRegistry
-# Import skills to ensure they are registered
-import src.skills.rdkit_skills
-import src.skills.file_skills
+from src.tools.base import ToolRegistry
+from src.skills.registry import SkillRegistry
+from src.tools.skill_tools import LoadSkillTool
+# Import tools to ensure they are registered
+import src.tools.rdkit_tools
+import src.tools.file_tools
 
 class ChemistryAgent:
     """
@@ -26,6 +28,17 @@ class ChemistryAgent:
         self.max_iterations = max_iterations
         self.memory = AgentMemory()
         self.session_thought_log = []
+        
+        # Initialize Skill Registry
+        self.skill_registry = SkillRegistry(SKILLS_DIR)
+        
+        # Initialize instance-specific tools from global registry
+        # This avoids shared-state anti-pattern where agents overwrite each other's tools
+        self.tools = {name: tool for name, tool in ToolRegistry._tools.items()}
+        
+        # Register instance-specific LoadSkillTool
+        load_skill_tool = LoadSkillTool(self.skill_registry)
+        self.tools[load_skill_tool.name] = load_skill_tool
         
     def _write_telemetry(self, event_type: str, data: dict):
         """Writes structured telemetry logs to a JSONL file."""
@@ -64,17 +77,17 @@ class ChemistryAgent:
             print(f"[Logger Error] Failed to write thought log: {e}")
 
     def _get_available_tools(self) -> List[Dict[str, Any]]:
-        """Retrieves tool definitions from the SkillRegistry."""
-        return SkillRegistry.get_tool_definitions()
+        """Retrieves tool definitions from the instance-specific tools."""
+        return [tool.get_tool_definition() for tool in self.tools.values()]
 
     def _execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Executes a tool by name using the SkillRegistry and updates memory."""
-        skill = SkillRegistry.get_skill(name)
-        if not skill:
-            return {"error": f"Tool '{name}' not found in registry."}
+        """Executes a tool by name using instance-specific tools and updates memory."""
+        tool = self.tools.get(name)
+        if not tool:
+            return {"error": f"Tool '{name}' not found in agent's toolset."}
         
         try:
-            result = skill.execute(**arguments)
+            result = tool.execute(**arguments)
             
             # Update structured memory based on tool results
             if name == "resolve_name_to_smiles" and "smiles" in result:
@@ -90,14 +103,22 @@ class ChemistryAgent:
         """Main execution loop for the agent."""
         self._write_telemetry("session_start", {"user_query": user_query})
         
-        # Inject current chemical context into the system prompt
+        # Inject current chemical context and available skills into the system prompt
         context_summary = self.memory.get_context_summary()
-        current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}"
+        skills_summary = self.skill_registry.get_capabilities_summary()
+        current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}"
+
+        # --- AUTO-COMPACTION CHECK ---
+        self.memory.check_and_compact(self, current_system_prompt)
+        # -----------------------------
         
         # Initialize messages for this specific run with full conversation history
         run_messages = [{"role": "system", "content": current_system_prompt}]
         for msg in self.memory.messages:
             run_messages.append(msg)
+        
+        # Add current user query to memory and run_messages
+        self.memory.add_message("user", user_query)
         run_messages.append({"role": "user", "content": user_query})
         
         iteration = 0
@@ -140,6 +161,9 @@ class ChemistryAgent:
 
             # 1. Handle Native Tool Calls
             if response_message.tool_calls:
+                # Save the assistant message with tool calls to memory
+                self.memory.add_message("assistant", response_message.content or "", tool_calls=response_message.tool_calls)
+                
                 print(f"[Agent] Executing {len(response_message.tool_calls)} native tool(s)...")
                 for tool_call in response_message.tool_calls:
                     function_name = tool_call.function.name
@@ -154,6 +178,9 @@ class ChemistryAgent:
                         "result": result
                     })
                     
+                    # Save the tool response to memory
+                    self.memory.add_tool_response(tool_call.id, function_name, json.dumps(result))
+                    
                     run_messages.append({
                         "tool_call_id": tool_call.id,
                         "role": "tool",
@@ -165,6 +192,10 @@ class ChemistryAgent:
             # 2. Handle XML Fallback
             if "<tool_call>" in content:
                 print(f"[Agent] Detected XML tool call fallback. Parsing...")
+                
+                # Save the assistant's XML tool call to memory
+                self.memory.add_message("assistant", content)
+                
                 xml_matches = re.findall(r'<tool_call>(.*?)</tool_call>', content, re.DOTALL)
                 
                 if xml_matches:
@@ -184,9 +215,14 @@ class ChemistryAgent:
                                     "fallback": "xml"
                                 })
                                 
+                                response_content = f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{json.dumps(result)}\n</tool_response>"
+                                
+                                # Save the XML tool response to memory as a user message (fallback pattern)
+                                self.memory.add_message("user", response_content)
+                                
                                 run_messages.append({
                                     "role": "user",
-                                    "content": f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{json.dumps(result)}\n</tool_response>"
+                                    "content": response_content
                                 })
                         except Exception as parse_err:
                             print(f"[Agent] XML Parse Error: {parse_err}")
@@ -197,8 +233,7 @@ class ChemistryAgent:
             if "</think>" in final_output:
                 final_output = final_output.split("</think>")[-1].strip()
             
-            # Save interaction to memory
-            self.memory.add_message("user", user_query)
+            # Save final assistant response to memory
             self.memory.add_message("assistant", final_output)
             self.memory.save_to_file()
             

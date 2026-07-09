@@ -1,0 +1,5 @@
+material_name,supplier,min_purity,max_moisture,lead_time_days
+Acetic Acid,GlobalChem,99.5,0.1,5
+Acetic Acid,LocalSupplies,99.0,0.2,2
+Methanol,PureSolvents,99.9,0.05,7
+Methanol,EcoSolv,99.5,0.1,4

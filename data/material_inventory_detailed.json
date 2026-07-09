@@ -1,0 +1,19 @@
+{
+  "inventory": [
+    {
+      "material": "Acetic Acid",
+      "batches": [
+        {"batch_no": "AA-001", "supplier": "GlobalChem", "received": "2026-06-01", "expiry": "2027-06-01", "cost_per_kg": 15.5, "stock_kg": 200},
+        {"batch_no": "AA-002", "supplier": "LocalSupplies", "received": "2026-07-05", "expiry": "2027-07-05", "cost_per_kg": 14.2, "stock_kg": 50}
+      ]
+    },
+    {
+      "material": "Methanol",
+      "batches": [
+        {"batch_no": "M-105", "supplier": "PureSolvents", "received": "2026-05-20", "expiry": "2026-11-20", "cost_per_kg": 8.0, "stock_kg": 1000},
+        {"batch_no": "M-106", "supplier": "EcoSolv", "received": "2026-07-01", "expiry": "2027-01-01", "cost_per_kg": 7.5, "stock_kg": 400}
+      ]
+    }
+  ],
+  "storage_notes": "Keep Acetic Acid in a cool, dry place. Methanol is highly flammable."
+}

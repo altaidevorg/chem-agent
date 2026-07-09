@@ -1,0 +1,8 @@
+batch_id,product,start_time,end_time,operator,notes
+B001,Ethanol,2026-07-08 10:00,2026-07-08 14:00,John Doe,Smooth run
+B002,Methanol,2026-07-08 15:00,2026-07-08 19:00,Jane Smith,Minor pressure fluctuation observed
+B003,Ethanol,2026-07-09 08:00,2026-07-09 12:00,John Doe,Temperature spike at 09:30, yield seems lower
+B004,Aspirin,2026-07-09 13:00,,Jane Smith,Shift ended before completion
+B004,Aspirin,,2026-07-09 18:00,Mike Ross,Continued from previous shift
+B005,Ethanol,2026-07-10 09:00,2026-07-10 13:00,John Doe,Used new catalyst batch C-99
+B006,Methanol,2026-07-10 14:00,2026-07-10 18:00,Jane Smith,Steam supply was unstable during the first hour

@@ -1,23 +1,23 @@
-# src/skills/base.py
+# src/tools/base.py
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-class BaseSkill(ABC):
+class BaseTool(ABC):
     """
-    Abstract Base Class for all agent skills.
+    Abstract Base Class for all agent tools.
     Defines the interface for tool definition and execution.
     """
     
     @property
     @abstractmethod
     def name(self) -> str:
-        """The unique name of the skill/tool."""
+        """The unique name of the tool."""
         pass
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """A clear description of what the skill does for the LLM."""
+        """A clear description of what the tool does for the LLM."""
         pass
 
     @property
@@ -28,7 +28,7 @@ class BaseSkill(ABC):
 
     @abstractmethod
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """The actual implementation of the skill."""
+        """The actual implementation of the tool."""
         pass
 
     def get_tool_definition(self) -> Dict[str, Any]:
@@ -42,29 +42,29 @@ class BaseSkill(ABC):
             }
         }
 
-class SkillRegistry:
+class ToolRegistry:
     """
-    Registry to manage and retrieve agent skills dynamically.
+    Registry to manage and retrieve agent tools dynamically.
     """
-    _skills: Dict[str, BaseSkill] = {}
+    _tools: Dict[str, BaseTool] = {}
 
     @classmethod
-    def register(cls, skill_instance: BaseSkill):
-        """Registers a skill instance."""
-        cls._skills[skill_instance.name] = skill_instance
-        print(f"[Registry] Registered skill: {skill_instance.name}")
+    def register(cls, tool_instance: BaseTool):
+        """Registers a tool instance."""
+        cls._tools[tool_instance.name] = tool_instance
+        print(f"[Registry] Registered tool: {tool_instance.name}")
 
     @classmethod
-    def get_skill(cls, name: str) -> Optional[BaseSkill]:
-        """Retrieves a skill by name."""
-        return cls._skills.get(name)
+    def get_tool(cls, name: str) -> Optional[BaseTool]:
+        """Retrieves a tool by name."""
+        return cls._tools.get(name)
 
     @classmethod
-    def get_all_skills(cls) -> List[BaseSkill]:
-        """Returns all registered skill instances."""
-        return list(cls._skills.values())
+    def get_all_tools(cls) -> List[BaseTool]:
+        """Returns all registered tool instances."""
+        return list(cls._tools.values())
 
     @classmethod
     def get_tool_definitions(cls) -> List[Dict[str, Any]]:
-        """Returns OpenAI-compatible tool definitions for all registered skills."""
-        return [skill.get_tool_definition() for skill in cls._skills.values()]
+        """Returns OpenAI-compatible tool definitions for all registered tools."""
+        return [tool.get_tool_definition() for tool in cls._tools.values()]

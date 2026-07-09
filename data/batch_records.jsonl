@@ -1,0 +1,3 @@
+{"batch_id": "B001", "product": "Ethanol", "start_time": "2026-07-08T10:00:00", "end_time": "2026-07-08T14:00:00", "quality_score": 0.95}
+{"batch_id": "B002", "product": "Methanol", "start_time": "2026-07-08T15:00:00", "end_time": "2026-07-08T19:00:00", "quality_score": 0.92}
+{"batch_id": "B003", "product": "Ethanol", "start_time": "2026-07-09T08:00:00", "end_time": "2026-07-09T12:00:00", "quality_score": 0.88}

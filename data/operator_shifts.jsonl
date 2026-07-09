@@ -1,0 +1,3 @@
+{"shift_id": "S1", "date": "2026-07-09", "start": "06:00", "end": "14:00", "operators": ["John Doe", "Alice"]}
+{"shift_id": "S2", "date": "2026-07-09", "start": "14:00", "end": "22:00", "operators": ["Jane Smith", "Bob"]}
+{"shift_id": "S3", "date": "2026-07-10", "start": "06:00", "end": "14:00", "operators": ["John Doe", "Mike Ross"]}
