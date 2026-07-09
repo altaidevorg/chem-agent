@@ -29,16 +29,37 @@ class AgentMemory:
         return len(self._tokenizer.encode(text))
 
     def get_total_tokens(self, system_prompt: str) -> int:
-        """Calculates the total tokens that would be sent to the LLM."""
+        """Calculates the total tokens that would be sent to the LLM, including metadata and tool calls."""
         total = self.count_tokens(system_prompt)
         for msg in self.messages:
-            total += self.count_tokens(msg.get("content", ""))
+            # Count content
+            content = msg.get("content") or ""
+            total += self.count_tokens(content)
+            
+            # Count tool calls if present (assistant role)
+            if "tool_calls" in msg and msg["tool_calls"]:
+                for tc in msg["tool_calls"]:
+                    # Handle both dict and object types for tool calls
+                    if isinstance(tc, dict):
+                        total += self.count_tokens(json.dumps(tc))
+                    else:
+                        # Fallback for objects (like from OpenAI SDK)
+                        try:
+                            total += self.count_tokens(str(tc))
+                        except:
+                            pass
+            
+            # Count tool metadata (tool role)
+            if msg.get("role") == "tool":
+                total += self.count_tokens(msg.get("tool_call_id", ""))
+                total += self.count_tokens(msg.get("name", ""))
+                
         return total
 
     def compact_tool_results(self):
         """Prunes large tool results to save space, keeping only a summary placeholder."""
         for msg in self.messages:
-            if msg.get("role") == "tool" and len(msg.get("content", "")) > 500:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and len(msg["content"]) > 500:
                 original_len = len(msg["content"])
                 # Keep a small snippet or just a placeholder
                 msg["content"] = f"[Tool result pruned. Original size: {original_len} chars. Data already processed by assistant.]"
@@ -61,13 +82,48 @@ class AgentMemory:
                 return
 
             # 2. Second attempt: Summarize old history
-            # Keep the last 4 messages verbatim, summarize everything before that
+            # We need to find a safe split point to avoid orphaning tool messages
             if len(self.messages) > 6:
-                to_summarize = self.messages[:-4]
-                keep_verbatim = self.messages[-4:]
+                # Start by trying to keep the last 4 messages
+                split_idx = len(self.messages) - 4
+                
+                # Dynamically adjust split_idx to ensure no orphaned tool messages
+                while split_idx > 0:
+                    orphaned = False
+                    for i in range(split_idx, len(self.messages)):
+                        msg = self.messages[i]
+                        if msg.get('role') == 'tool':
+                            tool_call_id = msg.get('tool_call_id')
+                            has_parent = False
+                            # Look for the parent assistant message within the 'keep_verbatim' part
+                            for j in range(split_idx, i):
+                                parent = self.messages[j]
+                                if parent.get('role') == 'assistant' and parent.get('tool_calls'):
+                                    for tc in parent['tool_calls']:
+                                        tc_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
+                                        if tc_id == tool_call_id:
+                                            has_parent = True
+                                            break
+                                    if has_parent:
+                                        break
+                            if not has_parent:
+                                orphaned = True
+                                break
+                    
+                    if orphaned:
+                        split_idx -= 1 # Move back to include the parent assistant message
+                    else:
+                        break
+                
+                if split_idx <= 0:
+                    print("[Memory] ⚠️ Could not find a safe split point for compaction. Skipping summarization.")
+                    return
+
+                to_summarize = self.messages[:split_idx]
+                keep_verbatim = self.messages[split_idx:]
                 
                 summary_prompt = "Please provide a concise summary of the following conversation history, focusing on key findings, data points, and decisions made. This summary will be used as context for future turns."
-                history_text = "\n".join([f"{m['role']}: {m['content']}" for m in to_summarize])
+                history_text = "\n".join([f"{m['role']}: {m.get('content', '')}" for m in to_summarize])
                 
                 try:
                     # We call the agent's client directly to avoid recursion
@@ -95,8 +151,14 @@ class AgentMemory:
                     print(f"[Memory] ✅ Compaction successful via summarization. New count: {self.get_total_tokens(system_prompt)}")
                 except Exception as e:
                     print(f"[Memory Error] Failed to summarize: {e}")
-                    # Fallback: Just drop the oldest 2 messages if summarization fails
-                    self.messages = self.messages[2:]
+                    # Fallback: Drop the oldest message and try to find a safe state
+                    # Instead of just dropping 2, we drop 1 and let the next turn try again
+                    # or we could find the first safe split point from the beginning.
+                    if len(self.messages) > 2:
+                        self.messages = self.messages[1:]
+                        # Ensure we don't start with a tool message
+                        while self.messages and self.messages[0].get('role') == 'tool':
+                            self.messages = self.messages[1:]
 
     def add_message(self, role: str, content: str, tool_calls: Optional[List[Any]] = None):
         """Adds a message to the conversation history."""

@@ -32,8 +32,13 @@ class ChemistryAgent:
         # Initialize Skill Registry
         self.skill_registry = SkillRegistry(SKILLS_DIR)
         
-        # Register LoadSkillTool
-        ToolRegistry.register(LoadSkillTool(self.skill_registry))
+        # Initialize instance-specific tools from global registry
+        # This avoids shared-state anti-pattern where agents overwrite each other's tools
+        self.tools = {name: tool for name, tool in ToolRegistry._tools.items()}
+        
+        # Register instance-specific LoadSkillTool
+        load_skill_tool = LoadSkillTool(self.skill_registry)
+        self.tools[load_skill_tool.name] = load_skill_tool
         
     def _write_telemetry(self, event_type: str, data: dict):
         """Writes structured telemetry logs to a JSONL file."""
@@ -72,14 +77,14 @@ class ChemistryAgent:
             print(f"[Logger Error] Failed to write thought log: {e}")
 
     def _get_available_tools(self) -> List[Dict[str, Any]]:
-        """Retrieves tool definitions from the ToolRegistry."""
-        return ToolRegistry.get_tool_definitions()
+        """Retrieves tool definitions from the instance-specific tools."""
+        return [tool.get_tool_definition() for tool in self.tools.values()]
 
     def _execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Executes a tool by name using the ToolRegistry and updates memory."""
-        tool = ToolRegistry.get_tool(name)
+        """Executes a tool by name using instance-specific tools and updates memory."""
+        tool = self.tools.get(name)
         if not tool:
-            return {"error": f"Tool '{name}' not found in registry."}
+            return {"error": f"Tool '{name}' not found in agent's toolset."}
         
         try:
             result = tool.execute(**arguments)
@@ -187,6 +192,10 @@ class ChemistryAgent:
             # 2. Handle XML Fallback
             if "<tool_call>" in content:
                 print(f"[Agent] Detected XML tool call fallback. Parsing...")
+                
+                # Save the assistant's XML tool call to memory
+                self.memory.add_message("assistant", content)
+                
                 xml_matches = re.findall(r'<tool_call>(.*?)</tool_call>', content, re.DOTALL)
                 
                 if xml_matches:
@@ -206,9 +215,14 @@ class ChemistryAgent:
                                     "fallback": "xml"
                                 })
                                 
+                                response_content = f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{json.dumps(result)}\n</tool_response>"
+                                
+                                # Save the XML tool response to memory as a user message (fallback pattern)
+                                self.memory.add_message("user", response_content)
+                                
                                 run_messages.append({
                                     "role": "user",
-                                    "content": f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{json.dumps(result)}\n</tool_response>"
+                                    "content": response_content
                                 })
                         except Exception as parse_err:
                             print(f"[Agent] XML Parse Error: {parse_err}")
