@@ -14,6 +14,8 @@ from src.tools.schema_cache import SchemaCache, sql_column_reference
 
 def _interpret_correlation(r: float) -> str:
     """Returns a human-readable interpretation for a Pearson/Spearman coefficient."""
+    if math.isnan(r):
+        return "undefined correlation (NaN)"
     magnitude = abs(r)
     if magnitude < 0.1:
         strength = "negligible"
@@ -183,9 +185,9 @@ class AnalyzeDatasetTool(BaseTool):
         return f"SELECT * FROM '{escaped_path}'"
 
     def _load_dataframe(self, file_path: str, where_body: str) -> pd.DataFrame:
-        con = duckdb.connect(database=":memory:")
         source_query = self._build_source_query(file_path, where_body)
-        return con.execute(source_query).df()
+        with duckdb.connect(database=":memory:") as con:
+            return con.execute(source_query).df()
 
     def _run_correlation(
         self,
@@ -210,24 +212,27 @@ class AnalyzeDatasetTool(BaseTool):
             if validation_error:
                 return validation_error
 
-            con = duckdb.connect(database=":memory:")
             source_query = self._build_source_query(file_path, where_body)
             x_ref = sql_column_reference(columns[0])
             y_ref = sql_column_reference(columns[1])
             group_ref = sql_column_reference(group_by)
 
-            grouped = con.execute(f"""
-                SELECT
-                    {group_ref} AS group_value,
-                    AVG({x_ref}) AS x_avg,
-                    AVG({y_ref}) AS y_avg
-                FROM ({source_query})
-                GROUP BY {group_ref}
-            """).df()
+            with duckdb.connect(database=":memory:") as con:
+                grouped = con.execute(f"""
+                    SELECT
+                        {group_ref} AS group_value,
+                        AVG({x_ref}) AS x_avg,
+                        AVG({y_ref}) AS y_avg
+                    FROM ({source_query})
+                    GROUP BY {group_ref}
+                """).df()
 
             grouped_clean = grouped[["x_avg", "y_avg"]].apply(pd.to_numeric, errors="coerce").dropna()
             if len(grouped_clean) < 3:
                 return {"error": "Need at least 3 groups with valid numeric averages for grouped correlation analysis."}
+            
+            if grouped_clean["x_avg"].std() == 0 or grouped_clean["y_avg"].std() == 0:
+                return {"error": "Cannot compute correlation: one of the columns has zero variance (constant values)."}
 
             if method == "spearman":
                 coef, p_value = stats.spearmanr(grouped_clean["x_avg"], grouped_clean["y_avg"])
@@ -257,6 +262,9 @@ class AnalyzeDatasetTool(BaseTool):
 
         if len(df_clean) < 3:
             return {"error": "Need at least 3 valid numeric records for correlation analysis after cleaning missing values."}
+        
+        if df_clean[columns[0]].std() == 0 or df_clean[columns[1]].std() == 0:
+            return {"error": "Cannot compute correlation: one of the columns has zero variance (constant values)."}
 
         x = df_clean[columns[0]]
         y = df_clean[columns[1]]
@@ -356,18 +364,18 @@ class AnalyzeDatasetTool(BaseTool):
             ratio_expr = f'SUM({num_ref}) / NULLIF(SUM({den_ref}), 0)'
 
         sort_dir = "DESC" if order == "desc" else "ASC"
-        con = duckdb.connect(database=":memory:")
-        ranked = con.execute(f"""
-            SELECT
-                {group_ref} AS group_value,
-                SUM({num_ref}) AS numerator_total,
-                SUM({den_ref}) AS denominator_total,
-                {ratio_expr} AS ratio_value
-            FROM ({source_query})
-            GROUP BY {group_ref}
-            ORDER BY ratio_value {sort_dir}
-            LIMIT {int(limit)}
-        """).df()
+        with duckdb.connect(database=":memory:") as con:
+            ranked = con.execute(f"""
+                SELECT
+                    {group_ref} AS group_value,
+                    SUM({num_ref}) AS numerator_total,
+                    SUM({den_ref}) AS denominator_total,
+                    {ratio_expr} AS ratio_value
+                FROM ({source_query})
+                GROUP BY {group_ref}
+                ORDER BY ratio_value {sort_dir}
+                LIMIT {int(limit)}
+            """).df()
 
         return {
             "analysis_type": "ratio_rank",
@@ -398,36 +406,36 @@ class AnalyzeDatasetTool(BaseTool):
         col = columns[0]
         col_ref = sql_column_reference(col)
         source_query = self._build_source_query(file_path, where_body)
-        con = duckdb.connect(database=":memory:")
-
-        stats_row = con.execute(f"""
-            SELECT
-                AVG({col_ref}) AS mean_value,
-                STDDEV({col_ref}) AS std_value,
-                COUNT(*) AS n
-            FROM ({source_query})
-        """).fetchone()
-
-        mean_value, std_value, n = stats_row
-        if std_value is None or std_value == 0 or n == 0:
-            return {"error": "Cannot detect outliers: zero variance or empty dataset."}
-
-        outliers = con.execute(f"""
-            WITH source AS ({source_query}),
-            stats AS (
+        
+        with duckdb.connect(database=":memory:") as con:
+            stats_row = con.execute(f"""
                 SELECT
                     AVG({col_ref}) AS mean_value,
-                    STDDEV({col_ref}) AS std_value
-                FROM source
-            )
-            SELECT
-                source.*,
-                ABS((source.{col_ref} - stats.mean_value) / stats.std_value) AS z_score
-            FROM source, stats
-            WHERE ABS((source.{col_ref} - stats.mean_value) / stats.std_value) > {float(z_threshold)}
-            ORDER BY z_score DESC
-            LIMIT {int(limit)}
-        """).df()
+                    STDDEV({col_ref}) AS std_value,
+                    COUNT(*) AS n
+                FROM ({source_query})
+            """).fetchone()
+
+            mean_value, std_value, n = stats_row
+            if std_value is None or std_value == 0 or n == 0:
+                return {"error": "Cannot detect outliers: zero variance or empty dataset."}
+
+            outliers = con.execute(f"""
+                WITH source AS ({source_query}),
+                stats AS (
+                    SELECT
+                        AVG({col_ref}) AS mean_value,
+                        STDDEV({col_ref}) AS std_value
+                    FROM source
+                )
+                SELECT
+                    source.*,
+                    ABS((source.{col_ref} - stats.mean_value) / stats.std_value) AS z_score
+                FROM source, stats
+                WHERE ABS((source.{col_ref} - stats.mean_value) / stats.std_value) > {float(z_threshold)}
+                ORDER BY z_score DESC
+                LIMIT {int(limit)}
+            """).df()
 
         return {
             "analysis_type": "outlier",
@@ -463,20 +471,20 @@ class AnalyzeDatasetTool(BaseTool):
         num_ref = sql_column_reference(numeric_col)
         group_ref = sql_column_reference(group_by)
         source_query = self._build_source_query(file_path, where_body)
-        con = duckdb.connect(database=":memory:")
-
-        comparison = con.execute(f"""
-            SELECT
-                {group_ref} AS group_value,
-                COUNT(*) AS record_count,
-                AVG({num_ref}) AS mean_value,
-                STDDEV({num_ref}) AS std_value,
-                MIN({num_ref}) AS min_value,
-                MAX({num_ref}) AS max_value
-            FROM ({source_query})
-            GROUP BY {group_ref}
-            ORDER BY mean_value DESC
-        """).df()
+        
+        with duckdb.connect(database=":memory:") as con:
+            comparison = con.execute(f"""
+                SELECT
+                    {group_ref} AS group_value,
+                    COUNT(*) AS record_count,
+                    AVG({num_ref}) AS mean_value,
+                    STDDEV({num_ref}) AS std_value,
+                    MIN({num_ref}) AS min_value,
+                    MAX({num_ref}) AS max_value
+                FROM ({source_query})
+                GROUP BY {group_ref}
+                ORDER BY mean_value DESC
+            """).df()
 
         return {
             "analysis_type": "group_compare",

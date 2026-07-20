@@ -56,15 +56,14 @@ class InspectDatasetTool(BaseTool):
             return {"error": f"File not found at path: {file_path}"}
 
         try:
-            con = duckdb.connect(database=':memory:')
-            
             # Escape single quotes in file path for safe SQL execution
             escaped_path = file_path.replace("'", "''")
 
-            description = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
-            sample = con.execute(f"SELECT * FROM '{escaped_path}' LIMIT 5").df()
-            count_res = con.execute(f"SELECT COUNT(*) FROM '{escaped_path}'").fetchone()
-            total_rows = count_res[0] if count_res else 0
+            with duckdb.connect(database=':memory:') as con:
+                description = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
+                sample = con.execute(f"SELECT * FROM '{escaped_path}' LIMIT 5").df()
+                count_res = con.execute(f"SELECT COUNT(*) FROM '{escaped_path}'").fetchone()
+                total_rows = count_res[0] if count_res else 0
 
             columns = _build_column_metadata(description)
             sql_column_list = ", ".join(col["sql_reference"] for col in columns)
@@ -135,8 +134,8 @@ class QueryDatasetTool(BaseTool):
     def execute(self, sql_query: str, max_results: int = 50) -> Dict[str, Any]:
         """Executes a SQL query on files and returns results as dictionaries."""
         try:
-            con = duckdb.connect(database=':memory:')
-            res_df = con.execute(sql_query).df()
+            with duckdb.connect(database=':memory:') as con:
+                res_df = con.execute(sql_query).df()
             total_found = len(res_df)
 
             if total_found > max_results:

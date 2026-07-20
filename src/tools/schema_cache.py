@@ -226,10 +226,10 @@ class SchemaCache:
             return None
         try:
             import duckdb
-            con = duckdb.connect(database=":memory:")
             # Escape single quotes in file path for safe SQL execution
             escaped_path = file_path.replace("'", "''")
-            description = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
+            with duckdb.connect(database=":memory:") as con:
+                description = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
             return description["column_name"].tolist()
         except Exception:
             return None
