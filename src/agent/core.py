@@ -15,6 +15,8 @@ from src.tools.skill_tools import LoadSkillTool
 # Import tools to ensure they are registered
 import src.tools.rdkit_tools
 import src.tools.file_tools
+import src.tools.data_tools
+import src.tools.stats_tools
 
 class ChemistryAgent:
     """
@@ -53,6 +55,38 @@ class ChemistryAgent:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"[Logger Error] Failed to write telemetry: {e}")
+
+    def _extract_thought(self, content: str) -> str:
+        """Extracts the model's chain-of-thought block from a response."""
+        if not content:
+            return ""
+
+        if "<think>" in content:
+            parts = content.split("<think>", 1)
+            if len(parts) > 1:
+                thought_part = parts[1]
+                if "</think>" in thought_part:
+                    return thought_part.split("</think>", 1)[0].strip()
+                return thought_part.strip()
+        if "</think>" in content:
+            return content.split("</think>", 1)[0].strip()
+        return ""
+
+    def _strip_thought(self, content: str) -> str:
+        """Returns response content with the thinking block removed."""
+        if not content:
+            return ""
+
+        if "<think>" in content:
+            parts = content.split("<think>", 1)
+            before_think = parts[0].strip()
+            if "</think>" in parts[1]:
+                after_think = parts[1].split("</think>", 1)[1].strip()
+                return f"{before_think}\n{after_think}".strip() if before_think else after_think
+            return before_think
+        if "</think>" in content:
+            return content.split("</think>", 1)[-1].strip()
+        return content.strip()
 
     def _log_thought(self, iteration: int, thought: str):
         """Logs the agent's reasoning process (Chain of Thought) for observability."""
@@ -144,20 +178,26 @@ class ChemistryAgent:
             
             # Extract and log the thought process (Chain of Thought)
             content = response_message.content or ""
-            thought = ""
-            if "<think>" in content and "</think>" in content:
-                thought = content.split("<think>")[1].split("</think>")[0].strip()
-            elif "</think>" in content:
-                thought = content.split("</think>")[0].strip()
-            
+            thought = self._extract_thought(content)
+            visible_content = self._strip_thought(content)
+
             if thought:
                 self._log_thought(iteration, thought)
 
-            self._write_telemetry("model_response", {
+            model_response_log = {
                 "iteration": iteration,
                 "has_thought": bool(thought),
-                "tool_calls": bool(response_message.tool_calls)
-            })
+                "thought": thought or None,
+                "visible_content": visible_content or None,
+                "tool_calls": bool(response_message.tool_calls),
+            }
+
+            if response_message.tool_calls:
+                model_response_log["tool_call_names"] = [
+                    tool_call.function.name for tool_call in response_message.tool_calls
+                ]
+
+            self._write_telemetry("model_response", model_response_log)
 
             # 1. Handle Native Tool Calls
             if response_message.tool_calls:
@@ -229,10 +269,8 @@ class ChemistryAgent:
                     continue
 
             # 3. Final Response
-            final_output = content
-            if "</think>" in final_output:
-                final_output = final_output.split("</think>")[-1].strip()
-            
+            final_output = self._strip_thought(content)
+
             # Save final assistant response to memory
             self.memory.add_message("assistant", final_output)
             self.memory.save_to_file()

@@ -3,3 +3,6 @@ rdkit
 streamlit
 pypdf
 python-dotenv
+duckdb
+pandas
+scipy
