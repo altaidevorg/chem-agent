@@ -111,13 +111,27 @@ class AnalyzeDatasetTool(BaseTool):
                 },
                 "analysis_type": {
                     "type": "string",
-                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare"],
+                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis"],
                     "description": "Type of statistical analysis to perform.",
                 },
                 "columns": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Column names involved in the analysis.",
+                },
+                "timestamp_column": {
+                    "type": "string",
+                    "description": "The column containing timestamp data for time-series analysis.",
+                },
+                "window_size": {
+                    "type": "integer",
+                    "description": "The size of the window for rolling statistics (number of rows).",
+                    "default": 10,
+                },
+                "lag_steps": {
+                    "type": "integer",
+                    "description": "The number of steps to lag for lag analysis.",
+                    "default": 1,
                 },
                 "granularity": {
                     "type": "string",
@@ -266,8 +280,8 @@ class AnalyzeDatasetTool(BaseTool):
         if df_clean[columns[0]].std() == 0 or df_clean[columns[1]].std() == 0:
             return {"error": "Cannot compute correlation: one of the columns has zero variance (constant values)."}
 
-        x = df_clean[columns[0]]
-        y = df_clean[columns[1]]
+        x = df_clean.iloc[:, 0]
+        y = df_clean.iloc[:, 1]
 
         if method == "spearman":
             coef, p_value = stats.spearmanr(x, y)
@@ -491,11 +505,182 @@ class AnalyzeDatasetTool(BaseTool):
             "status": "success",
         }
 
+    def _run_rolling_stats(
+        self,
+        file_path: str,
+        columns: List[str],
+        timestamp_column: Optional[str],
+        window_size: int,
+        group_by: Optional[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or not timestamp_column:
+            return {"error": "rolling_stats requires 'columns' and 'timestamp_column'."}
+        
+        validation_cols = columns + [timestamp_column]
+        if group_by:
+            validation_cols.append(group_by)
+            
+        validation_error = _validate_requested_columns(file_path, validation_cols)
+        if validation_error:
+            return validation_error
+
+        ts_ref = sql_column_reference(timestamp_column)
+        source_query = self._build_source_query(file_path, where_body)
+        partition_clause = f"PARTITION BY {sql_column_reference(group_by)}" if group_by else ""
+        
+        # Build rolling expressions and column selection
+        rolling_exprs = []
+        selected_cols = [ts_ref]
+        if group_by:
+            selected_cols.append(sql_column_reference(group_by))
+            
+        for col in columns:
+            col_ref = sql_column_reference(col)
+            selected_cols.append(col_ref)
+            rolling_exprs.append(f"AVG({col_ref}) OVER ({partition_clause} ORDER BY {ts_ref} ROWS BETWEEN {window_size-1} PRECEDING AND CURRENT ROW) AS \"rolling_avg_{col}\"")
+            rolling_exprs.append(f"STDDEV({col_ref}) OVER ({partition_clause} ORDER BY {ts_ref} ROWS BETWEEN {window_size-1} PRECEDING AND CURRENT ROW) AS \"rolling_std_{col}\"")
+
+        rolling_exprs_str = ", ".join(rolling_exprs)
+        selected_cols_str = ", ".join(selected_cols)
+        
+        with duckdb.connect(database=":memory:") as con:
+            result = con.execute(f"""
+                SELECT
+                    {selected_cols_str},
+                    {rolling_exprs_str}
+                FROM ({source_query})
+                ORDER BY {ts_ref}
+                LIMIT 40
+            """).df()
+
+        return {
+            "analysis_type": "rolling_stats",
+            "columns": columns,
+            "timestamp_column": timestamp_column,
+            "window_size": window_size,
+            "group_by": group_by,
+            "result": _sanitize_records(result),
+            "message": "Showing first 100 records with rolling statistics.",
+            "status": "success",
+        }
+
+    def _run_lag_analysis(
+        self,
+        file_path: str,
+        columns: List[str],
+        timestamp_column: Optional[str],
+        lag_steps: int,
+        group_by: Optional[str],
+        method: str,
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if len(columns) != 2 or not timestamp_column:
+            return {"error": "lag_analysis requires exactly two 'columns' (predictor, target) and 'timestamp_column'."}
+            
+        validation_cols = columns + [timestamp_column]
+        if group_by:
+            validation_cols.append(group_by)
+            
+        validation_error = _validate_requested_columns(file_path, validation_cols)
+        if validation_error:
+            return validation_error
+
+        predictor_col = columns[0]
+        target_col = columns[1]
+        ts_ref = sql_column_reference(timestamp_column)
+        pred_ref = sql_column_reference(predictor_col)
+        target_ref = sql_column_reference(target_col)
+        source_query = self._build_source_query(file_path, where_body)
+        partition_clause = f"PARTITION BY {sql_column_reference(group_by)}" if group_by else ""
+
+        with duckdb.connect(database=":memory:") as con:
+            # Create a lagged dataset
+            lagged_df = con.execute(f"""
+                SELECT
+                    {target_ref} AS target,
+                    LAG({pred_ref}, {lag_steps}) OVER ({partition_clause} ORDER BY {ts_ref}) AS lagged_predictor
+                FROM ({source_query})
+            """).df()
+
+        lagged_df = lagged_df.dropna()
+        if len(lagged_df) < 3:
+            return {"error": "Not enough data points after lagging for correlation analysis."}
+
+        if method == "spearman":
+            coef, p_value = stats.spearmanr(lagged_df["lagged_predictor"], lagged_df["target"])
+        else:
+            coef, p_value = stats.pearsonr(lagged_df["lagged_predictor"], lagged_df["target"])
+
+        return {
+            "analysis_type": "lag_analysis",
+            "predictor_column": predictor_col,
+            "target_column": target_col,
+            "lag_steps": lag_steps,
+            "method": method,
+            "result": {
+                "correlation_coefficient": round(float(coef), 4),
+                "p_value": round(float(p_value), 6),
+                "interpretation_hint": _interpret_correlation(float(coef)),
+            },
+            "status": "success",
+        }
+
+    def _run_shift_analysis(
+        self,
+        file_path: str,
+        columns: List[str],
+        timestamp_column: Optional[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or len(columns) != 1 or not timestamp_column:
+            return {"error": "shift_analysis requires exactly one numeric column in 'columns' and 'timestamp_column'."}
+            
+        validation_error = _validate_requested_columns(file_path, columns + [timestamp_column])
+        if validation_error:
+            return validation_error
+
+        num_ref = sql_column_reference(columns[0])
+        ts_ref = sql_column_reference(timestamp_column)
+        source_query = self._build_source_query(file_path, where_body)
+
+        with duckdb.connect(database=":memory:") as con:
+            comparison = con.execute(f"""
+                WITH shifted AS (
+                    SELECT
+                        *,
+                        CASE 
+                            WHEN hour({ts_ref}) BETWEEN 8 AND 15 THEN '1_Morning_Shift'
+                            WHEN hour({ts_ref}) BETWEEN 16 AND 23 THEN '2_Evening_Shift'
+                            ELSE '3_Night_Shift'
+                        END AS shift_name
+                    FROM ({source_query})
+                )
+                SELECT
+                    shift_name,
+                    COUNT(*) AS record_count,
+                    AVG({num_ref}) AS mean_value,
+                    STDDEV({num_ref}) AS std_value
+                FROM shifted
+                GROUP BY shift_name
+                ORDER BY shift_name ASC
+            """).df()
+
+        return {
+            "analysis_type": "shift_analysis",
+            "column": columns[0],
+            "result": _sanitize_records(comparison),
+            "status": "success",
+        }
+
     def execute(
         self,
         file_path: str,
         analysis_type: str,
         columns: Optional[List[str]] = None,
+        timestamp_column: Optional[str] = None,
+        window_size: int = 10,
+        lag_steps: int = 1,
         granularity: str = "row_level",
         group_by: Optional[str] = None,
         method: str = "pearson",
@@ -529,10 +714,22 @@ class AnalyzeDatasetTool(BaseTool):
                 return self._run_outlier(file_path, columns, z_threshold, limit, where_body)
             if analysis_type == "group_compare":
                 return self._run_group_compare(file_path, columns, group_by, where_body)
+            if analysis_type == "rolling_stats":
+                return self._run_rolling_stats(
+                    file_path, columns, timestamp_column, window_size, group_by, where_body
+                )
+            if analysis_type == "lag_analysis":
+                return self._run_lag_analysis(
+                    file_path, columns, timestamp_column, lag_steps, group_by, method, where_body
+                )
+            if analysis_type == "shift_analysis":
+                return self._run_shift_analysis(
+                    file_path, columns, timestamp_column, where_body
+                )
 
             return {
                 "error": f"Unsupported analysis_type: {analysis_type}",
-                "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare"],
+                "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis"],
             }
         except Exception as e:
             return {"error": f"Analysis failed: {str(e)}"}

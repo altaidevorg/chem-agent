@@ -56,13 +56,33 @@ class AgentMemory:
                 
         return total
 
-    def compact_tool_results(self):
-        """Prunes large tool results to save space, keeping only a summary placeholder."""
-        for msg in self.messages:
+    def compact_tool_results(self, force_last: bool = False):
+        """
+        Prunes large tool results to save space.
+        If force_last is True, it will even prune the most recent tool result
+        to prevent a hard context overflow crash.
+        """
+        if not self.messages:
+            return
+
+        for i in range(len(self.messages)):
+            msg = self.messages[i]
             if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and len(msg["content"]) > 500:
-                original_len = len(msg["content"])
-                # Keep a small snippet or just a placeholder
-                msg["content"] = f"[Tool result pruned. Original size: {original_len} chars. Data already processed by assistant.]"
+                # Normal case: prune if already processed by assistant
+                has_subsequent_assistant = False
+                for j in range(i + 1, len(self.messages)):
+                    if self.messages[j].get("role") == "assistant":
+                        has_subsequent_assistant = True
+                        break
+                
+                if has_subsequent_assistant:
+                    original_len = len(msg["content"])
+                    msg["content"] = f"[Tool result pruned. Original size: {original_len} chars. Data already processed by assistant in previous turns.]"
+                elif force_last and i == len(self.messages) - 1:
+                    # Emergency case: The very last message is too big and will crash the model
+                    original_len = len(msg["content"])
+                    # We keep only a small part of it so the model has *something* to look at
+                    msg["content"] = msg["content"][:1000] + f"\n... [TRUNCATED DUE TO SIZE: {original_len} chars total] ..."
 
     def check_and_compact(self, agent, system_prompt: str):
         """Checks if the token limit is reached and triggers compaction if necessary."""
@@ -77,8 +97,10 @@ class AgentMemory:
                 "session_id": self.session_id
             })
             
-            # 1. First attempt: Prune tool results
-            self.compact_tool_results()
+            # 1. First attempt: Prune tool results (including the last one if it's huge)
+            # If we are dangerously close to the limit, we force prune even the last message
+            is_dangerously_high = total_tokens > (MAX_CONTEXT_TOKENS * 0.95)
+            self.compact_tool_results(force_last=is_dangerously_high)
             
             # Re-check tokens
             total_tokens = self.get_total_tokens(system_prompt)

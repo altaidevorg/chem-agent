@@ -142,22 +142,24 @@ class ChemistryAgent:
         skills_summary = self.skill_registry.get_capabilities_summary()
         current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}"
 
-        # --- AUTO-COMPACTION CHECK ---
-        self.memory.check_and_compact(self, current_system_prompt)
-        # -----------------------------
-        
-        # Initialize messages for this specific run with full conversation history
-        run_messages = [{"role": "system", "content": current_system_prompt}]
-        for msg in self.memory.messages:
-            run_messages.append(msg)
-        
-        # Add current user query to memory and run_messages
+        # Add current user query to memory
         self.memory.add_message("user", user_query)
-        run_messages.append({"role": "user", "content": user_query})
         
         iteration = 0
         while iteration < self.max_iterations:
             iteration += 1
+            
+            # --- AUTO-COMPACTION CHECK ---
+            # We check before every API call to ensure tool results or long history 
+            # don't exceed the model's context window.
+            self.memory.check_and_compact(self, current_system_prompt)
+            # -----------------------------
+
+            # Refresh run_messages after potential compaction
+            run_messages = [{"role": "system", "content": current_system_prompt}]
+            for msg in self.memory.messages:
+                run_messages.append(msg)
+
             print(f"[Agent] (Turn {iteration}) Requesting completion...")
             
             try:

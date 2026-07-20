@@ -47,10 +47,15 @@ chem-agent/
 │   │   ├── core.py         # Orchestration and execution loop
 │   │   ├── memory.py       # Context and entity tracking
 │   │   └── prompts.py      # System instructions
-│   ├── skills/             # Tool/Skill implementations
-│   │   ├── base.py         # Skill registry and base class
-│   │   ├── rdkit_skills.py # Chemical informatics tools
-│   │   └── file_skills.py  # I/O operations
+│   ├── skills/             # High-level task-specific workflow definitions
+│   │   ├── registry.py     # Skill discovery and management
+│   │   └── definitions/    # Skill definitions (SKILL.md files)
+│   ├── tools/              # Atomic tool implementations
+│   │   ├── base.py         # Base class and global registry
+│   │   ├── rdkit_tools.py  # Chemical informatics tools
+│   │   ├── data_tools.py   # Dataset inspection and SQL querying (DuckDB)
+│   │   ├── stats_tools.py  # Statistical and time-series analysis
+│   │   └── file_tools.py   # Basic I/O operations
 │   ├── config.py           # System configuration
 │   └── vllm_client.py      # LLM API client
 ├── scripts/                # Utility and test scripts
@@ -86,6 +91,19 @@ The agent is equipped with specialized "skills" that allow it to interact with c
 - **`detect_functional_groups`**: Scans for common functional groups (Alcohols, Amines, Acids, etc.) using SMARTS patterns.
 - **`resolve_smiles_to_name`**: Reverse-resolves a SMILES string into its common or IUPAC name via PubChem.
 
+### Industrial Data Analytics (DuckDB & Statistics)
+- **`inspect_dataset`**: Explores schema and data types of large CSV/JSONL files without loading them fully into memory.
+- **`query_dataset`**: Executes high-performance SQL queries on local datasets using DuckDB (supports JOINs and complex filtering).
+- **`analyze_dataset`**: Performs deterministic statistical analysis:
+    - **Descriptive Stats**: Mean, median, std dev, min/max.
+    - **Correlation**: Pearson/Spearman (row-level or grouped).
+    - **Ratio Ranking**: Efficiency analysis (e.g., Energy/Unit) with custom aggregation methods.
+    - **Outlier Detection**: Z-score based anomaly detection.
+    - **Time-Series**: 
+        - `rolling_stats`: Moving averages and standard deviations.
+        - `lag_analysis`: Cross-correlation with temporal delays.
+        - `shift_analysis`: Automatic performance comparison across Morning/Evening/Night shifts.
+
 ### System & File Operations
 - **`read_file`**: Extracts text from `.txt`, `.md`, `.json`, and even `.pdf` documents.
 - **`write_file`**: Saves analytical reports or results to disk for later use.
@@ -97,9 +115,9 @@ The agent is equipped with specialized "skills" that allow it to interact with c
 The agent features a persistent **AgentMemory** system that tracks:
 1.  **Conversation History**: Full dialogue history between the user and the agent.
 2.  **Entity Tracking**: A structured registry of all chemical entities discussed, including their SMILES strings and calculated properties.
-3.  **Context Injection**: At every turn, the agent's current "Chemical Context" is injected into the system prompt, ensuring it "remembers" previously resolved structures.
-
-**Persistence**: Every session is saved as a JSON file in `logs/sessions/`, allowing for session recovery and audit trails.
+3.  **Context Injection**: At every turn, the agent's current "Chemical Context" is injected into the system prompt.
+4.  **Dynamic Compaction**: Automatically özetleme (summarization) of old history when reaching model context limits (e.g., 16k tokens).
+5.  **Smart Tool Pruning**: Pruning of large tool outputs (e.g., 100-row datasets) after they have been processed by the LLM to maintain a lean context window.
 
 ---
 

@@ -39,7 +39,16 @@ DuckDB allows you to join multiple files directly in a single SQL query.
   WHERE logs.batch_id = 'B003'
   ```
 
-### 5. Interpretation Only
+### 5. Time-Series Analytics (New)
+For data with timestamps, use specialized time-series tools to identify trends and periodic patterns.
+- **Rolling Statistics**: Detect local trends or volatility spikes.
+  - `analyze_dataset(analysis_type="rolling_stats", columns=["Temperature"], timestamp_column="Timestamp", window_size=20, group_by="Machine ID")`
+- **Lag Analysis**: Identify delayed effects between variables (e.g., pressure impact on yield 5 minutes later).
+  - `analyze_dataset(analysis_type="lag_analysis", columns=["Pressure", "Yield"], timestamp_column="Timestamp", lag_steps=5)`
+- **Shift Analysis**: Compare performance across Morning, Evening, and Night shifts.
+  - `analyze_dataset(analysis_type="shift_analysis", columns=["Defect Rate (%)"], timestamp_column="Timestamp")`
+
+### 6. Interpretation Only
 Once tools return numeric results, interpret them in plain language. Do NOT recalculate coefficients, averages, or rankings.
 
 ## ⚠️ Critical Rules
