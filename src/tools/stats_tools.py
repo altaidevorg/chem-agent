@@ -561,7 +561,7 @@ class AnalyzeDatasetTool(BaseTool):
             "window_size": window_size,
             "group_by": group_by,
             "result": _sanitize_records(result),
-            "message": "Showing first 100 records with rolling statistics.",
+            "message": "Showing first 40 records with rolling statistics.",
             "status": "success",
         }
 

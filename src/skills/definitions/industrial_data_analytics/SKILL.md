@@ -24,7 +24,7 @@ For files larger than 5MB or containing thousands of rows, avoid `read_file`. In
 ### 3. Statistical Analysis (Tool Required — Never Compute Mentally)
 For correlation, descriptive statistics, ratio ranking, outliers, or group comparisons, you MUST use `analyze_dataset`.
 - **Correlation**: `analyze_dataset(analysis_type="correlation", granularity="row_level", columns=["Recycled Material (%)", "Defect Rate (%)"], method="pearson")`
-- **Energy efficiency ranking**: `analyze_dataset(analysis_type="ratio_rank", numerator="Energy Consumption (kWh)", denominator="Production Output (Units)", group_by="Machine ID", ratio_method="sum_ratio", order="asc", limit=5)`
+- **Energy efficiency ranking**: `analyze_dataset(analysis_type="ratio_rank", numerator="Energy Consumption (kWh)", denominator="Production Output (Units)", group_by="Machine ID", ratio_method="sum_ratio", order="desc", limit=5)`
 - **Outliers**: `analyze_dataset(analysis_type="outlier", columns=["Energy Consumption (kWh)"], z_threshold=3.0)`
 - **Group comparison**: `analyze_dataset(analysis_type="group_compare", columns=["Defect Rate (%)"], group_by="Material Category")`
 
