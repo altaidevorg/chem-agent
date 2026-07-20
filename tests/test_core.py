@@ -26,3 +26,17 @@ def test_agent_run_loop(mock_agent):
     response = agent.run("Hi")
     assert "assistant" in response.lower() or "hello" in response.lower()
     assert len(agent.memory.messages) >= 2 # User + Assistant
+
+
+def test_extract_thought_from_response(mock_agent):
+    agent, _ = mock_agent
+    content = (
+        "<think>I should inspect the dataset first.</think>\n"
+        "Let me analyze the file."
+    )
+
+    thought = agent._extract_thought(content)
+    visible = agent._strip_thought(content)
+
+    assert thought == "I should inspect the dataset first."
+    assert visible == "Let me analyze the file."
