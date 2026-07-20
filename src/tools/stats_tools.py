@@ -408,31 +408,28 @@ class AnalyzeDatasetTool(BaseTool):
         source_query = self._build_source_query(file_path, where_body)
         
         with duckdb.connect(database=":memory:") as con:
+            # Create a temporary table to store source results so we only scan the file once
+            con.execute(f"CREATE TEMP TABLE source AS {source_query}")
+            
             stats_row = con.execute(f"""
                 SELECT
                     AVG({col_ref}) AS mean_value,
                     STDDEV({col_ref}) AS std_value,
                     COUNT(*) AS n
-                FROM ({source_query})
+                FROM source
             """).fetchone()
 
             mean_value, std_value, n = stats_row
             if std_value is None or std_value == 0 or n == 0:
                 return {"error": "Cannot detect outliers: zero variance or empty dataset."}
 
+            # Directly interpolate calculated stats for high-performance outlier discovery
             outliers = con.execute(f"""
-                WITH source AS ({source_query}),
-                stats AS (
-                    SELECT
-                        AVG({col_ref}) AS mean_value,
-                        STDDEV({col_ref}) AS std_value
-                    FROM source
-                )
                 SELECT
-                    source.*,
-                    ABS((source.{col_ref} - stats.mean_value) / stats.std_value) AS z_score
-                FROM source, stats
-                WHERE ABS((source.{col_ref} - stats.mean_value) / stats.std_value) > {float(z_threshold)}
+                    *,
+                    ABS(({col_ref} - {float(mean_value)}) / {float(std_value)}) AS z_score
+                FROM source
+                WHERE ABS(({col_ref} - {float(mean_value)}) / {float(std_value)}) > {float(z_threshold)}
                 ORDER BY z_score DESC
                 LIMIT {int(limit)}
             """).df()
