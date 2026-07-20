@@ -57,15 +57,18 @@ class InspectDatasetTool(BaseTool):
 
         try:
             con = duckdb.connect(database=':memory:')
+            
+            # Escape single quotes in file path for safe SQL execution
+            escaped_path = file_path.replace("'", "''")
 
-            description = con.execute(f"DESCRIBE SELECT * FROM '{file_path}' LIMIT 0").df()
-            sample = con.execute(f"SELECT * FROM '{file_path}' LIMIT 5").df()
-            count_res = con.execute(f"SELECT COUNT(*) FROM '{file_path}'").fetchone()
+            description = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
+            sample = con.execute(f"SELECT * FROM '{escaped_path}' LIMIT 5").df()
+            count_res = con.execute(f"SELECT COUNT(*) FROM '{escaped_path}'").fetchone()
             total_rows = count_res[0] if count_res else 0
 
             columns = _build_column_metadata(description)
             sql_column_list = ", ".join(col["sql_reference"] for col in columns)
-            example_select = f"SELECT {sql_column_list} FROM '{file_path}' LIMIT 5"
+            example_select = f"SELECT {sql_column_list} FROM '{escaped_path}' LIMIT 5"
 
             SchemaCache.register(
                 file_path,

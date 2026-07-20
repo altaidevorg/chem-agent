@@ -61,10 +61,15 @@ class ChemistryAgent:
         if not content:
             return ""
 
-        if "<think>" in content and "</think>" in content:
-            return content.split("<think>")[1].split("</think>")[0].strip()
+        if "<think>" in content:
+            parts = content.split("<think>", 1)
+            if len(parts) > 1:
+                thought_part = parts[1]
+                if "</think>" in thought_part:
+                    return thought_part.split("</think>", 1)[0].strip()
+                return thought_part.strip()
         if "</think>" in content:
-            return content.split("</think>")[0].strip()
+            return content.split("</think>", 1)[0].strip()
         return ""
 
     def _strip_thought(self, content: str) -> str:
@@ -72,8 +77,15 @@ class ChemistryAgent:
         if not content:
             return ""
 
+        if "<think>" in content:
+            parts = content.split("<think>", 1)
+            before_think = parts[0].strip()
+            if "</think>" in parts[1]:
+                after_think = parts[1].split("</think>", 1)[1].strip()
+                return f"{before_think}\n{after_think}".strip() if before_think else after_think
+            return before_think
         if "</think>" in content:
-            return content.split("</think>")[-1].strip()
+            return content.split("</think>", 1)[-1].strip()
         return content.strip()
 
     def _log_thought(self, iteration: int, thought: str):

@@ -176,9 +176,11 @@ class AnalyzeDatasetTool(BaseTool):
         }
 
     def _build_source_query(self, file_path: str, where_body: str) -> str:
+        # Escape single quotes in file path for safe SQL execution
+        escaped_path = file_path.replace("'", "''")
         if where_body:
-            return f"SELECT * FROM '{file_path}' WHERE {where_body}"
-        return f"SELECT * FROM '{file_path}'"
+            return f"SELECT * FROM '{escaped_path}' WHERE {where_body}"
+        return f"SELECT * FROM '{escaped_path}'"
 
     def _load_dataframe(self, file_path: str, where_body: str) -> pd.DataFrame:
         con = duckdb.connect(database=":memory:")
@@ -223,13 +225,14 @@ class AnalyzeDatasetTool(BaseTool):
                 GROUP BY {group_ref}
             """).df()
 
-            if len(grouped) < 3:
-                return {"error": "Need at least 3 groups for grouped correlation analysis."}
+            grouped_clean = grouped[["x_avg", "y_avg"]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(grouped_clean) < 3:
+                return {"error": "Need at least 3 groups with valid numeric averages for grouped correlation analysis."}
 
             if method == "spearman":
-                coef, p_value = stats.spearmanr(grouped["x_avg"], grouped["y_avg"])
+                coef, p_value = stats.spearmanr(grouped_clean["x_avg"], grouped_clean["y_avg"])
             else:
-                coef, p_value = stats.pearsonr(grouped["x_avg"], grouped["y_avg"])
+                coef, p_value = stats.pearsonr(grouped_clean["x_avg"], grouped_clean["y_avg"])
 
             n = len(grouped)
             return {
@@ -250,11 +253,13 @@ class AnalyzeDatasetTool(BaseTool):
             }
 
         df = self._load_dataframe(file_path, where_body)
-        if len(df) < 3:
-            return {"error": "Need at least 3 rows for correlation analysis."}
+        df_clean = df[columns].apply(pd.to_numeric, errors="coerce").dropna()
 
-        x = df[columns[0]]
-        y = df[columns[1]]
+        if len(df_clean) < 3:
+            return {"error": "Need at least 3 valid numeric records for correlation analysis after cleaning missing values."}
+
+        x = df_clean[columns[0]]
+        y = df_clean[columns[1]]
 
         if method == "spearman":
             coef, p_value = stats.spearmanr(x, y)
@@ -297,14 +302,20 @@ class AnalyzeDatasetTool(BaseTool):
             if series.empty:
                 summary.append({"column": col, "error": "No numeric values found."})
                 continue
+            mean_val = series.mean()
+            std_val = series.std()
+            min_val = series.min()
+            max_val = series.max()
+            median_val = series.median()
+
             summary.append({
                 "column": col,
                 "count": int(series.count()),
-                "mean": round(float(series.mean()), 4),
-                "std": round(float(series.std()), 4),
-                "min": round(float(series.min()), 4),
-                "max": round(float(series.max()), 4),
-                "median": round(float(series.median()), 4),
+                "mean": round(float(mean_val), 4) if not pd.isna(mean_val) else None,
+                "std": round(float(std_val), 4) if not pd.isna(std_val) else None,
+                "min": round(float(min_val), 4) if not pd.isna(min_val) else None,
+                "max": round(float(max_val), 4) if not pd.isna(max_val) else None,
+                "median": round(float(median_val), 4) if not pd.isna(median_val) else None,
             })
 
         return {
