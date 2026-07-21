@@ -6,3 +6,4 @@ python-dotenv
 duckdb
 pandas
 scipy
+statsmodels

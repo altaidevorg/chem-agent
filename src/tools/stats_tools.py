@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 import pandas as pd
+import numpy as np
 from scipy import stats
 
 from src.tools.base import BaseTool, ToolRegistry
@@ -96,8 +97,9 @@ class AnalyzeDatasetTool(BaseTool):
     def description(self) -> str:
         return (
             "Performs deterministic statistical analysis on tabular datasets (CSV/JSONL). "
-            "Use this for correlation, descriptive stats, ratio ranking, outliers, and group comparisons. "
-            "Never calculate statistics mentally — always use this tool."
+            "Use this for correlation, descriptive stats, ratio ranking, outliers, group comparisons, "
+            "regression, process capability, pareto, trend projection, downsampling, correlation matrix, "
+            "and seasonal decomposition. Never calculate statistics mentally — always use this tool."
         )
 
     @property
@@ -111,13 +113,34 @@ class AnalyzeDatasetTool(BaseTool):
                 },
                 "analysis_type": {
                     "type": "string",
-                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis"],
+                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition"],
                     "description": "Type of statistical analysis to perform.",
                 },
                 "columns": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Column names involved in the analysis.",
+                    "description": "Column names involved in the analysis. For 'describe' and 'outlier', this is optional and defaults to all numeric columns.",
+                },
+                "period": {
+                    "type": "integer",
+                    "description": "The seasonal period for decomposition (e.g., 24 for hourly data with daily seasonality, 7 for daily data with weekly seasonality).",
+                },
+                "target_column": {
+                    "type": "string",
+                    "description": "Target variable (Y) for regression analysis.",
+                },
+                "predictor_columns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Predictor variables (X) for regression analysis.",
+                },
+                "lsl": {
+                    "type": "number",
+                    "description": "Lower Specification Limit for process capability analysis.",
+                },
+                "usl": {
+                    "type": "number",
+                    "description": "Upper Specification Limit for process capability analysis.",
                 },
                 "timestamp_column": {
                     "type": "string",
@@ -212,7 +235,18 @@ class AnalyzeDatasetTool(BaseTool):
         method: str,
         where_body: str,
     ) -> Dict[str, Any]:
-        if len(columns) != 2:
+        if len(columns) > 2:
+            # Auto-redirect to correlation_matrix for better efficiency if no group_by is requested
+            if not group_by:
+                return self._run_correlation_matrix(file_path, where_body)
+            
+            return {
+                "error": f"The 'correlation' analysis type is only for exactly 2 columns when using 'group_by'. You provided {len(columns)} columns.",
+                "hint": "To analyze relationships between multiple columns at once, use analysis_type='correlation_matrix' instead. It is much more efficient.",
+                "provided_columns": columns
+            }
+        
+        if len(columns) < 2:
             return {"error": "correlation requires exactly two columns in 'columns'."}
 
         validation_error = _validate_requested_columns(file_path, columns)
@@ -310,14 +344,18 @@ class AnalyzeDatasetTool(BaseTool):
         columns: List[str],
         where_body: str,
     ) -> Dict[str, Any]:
+        df = self._load_dataframe(file_path, where_body)
+        
+        # Auto-select numeric columns if none provided
         if not columns:
-            return {"error": "describe requires at least one column in 'columns'."}
+            columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            if not columns:
+                return {"error": "No numeric columns found for descriptive statistics."}
 
         validation_error = _validate_requested_columns(file_path, columns)
         if validation_error:
             return validation_error
 
-        df = self._load_dataframe(file_path, where_body)
         summary = []
         for col in columns:
             series = pd.to_numeric(df[col], errors="coerce").dropna()
@@ -343,6 +381,7 @@ class AnalyzeDatasetTool(BaseTool):
         return {
             "analysis_type": "describe",
             "n_rows": len(df),
+            "columns_analyzed": columns,
             "result": summary,
             "status": "success",
         }
@@ -410,57 +449,89 @@ class AnalyzeDatasetTool(BaseTool):
         limit: int,
         where_body: str,
     ) -> Dict[str, Any]:
-        if not columns or len(columns) != 1:
-            return {"error": "outlier requires exactly one numeric column in 'columns'."}
+        df = self._load_dataframe(file_path, where_body)
+        
+        # Auto-select numeric columns if none provided
+        if not columns:
+            columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            if not columns:
+                return {"error": "No numeric columns found for outlier detection.", "status": "fail"}
 
         validation_error = _validate_requested_columns(file_path, columns)
         if validation_error:
+            validation_error["status"] = "fail"
             return validation_error
 
-        col = columns[0]
-        col_ref = sql_column_reference(col)
-        source_query = self._build_source_query(file_path, where_body)
+        results = {}
+        overall_summary = []
         
-        with duckdb.connect(database=":memory:") as con:
-            # Create a temporary table to store source results so we only scan the file once
-            con.execute(f"CREATE TEMP TABLE source AS {source_query}")
+        # Maintain backward compatibility for single-column tests
+        single_column_stats = {}
+
+        for col in columns:
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if series.empty:
+                continue
             
-            stats_row = con.execute(f"""
-                SELECT
-                    AVG({col_ref}) AS mean_value,
-                    STDDEV({col_ref}) AS std_value,
-                    COUNT(*) AS n
-                FROM source
-            """).fetchone()
+            mean_val = series.mean()
+            std_val = series.std()
+            
+            # Maintain backward compatibility for single-column case
+            if len(columns) == 1:
+                single_column_stats = {
+                    "population_stats": {
+                        "mean": round(float(mean_val), 4),
+                        "std": round(float(std_val), 4) if not pd.isna(std_val) else 0,
+                        "n": int(series.count())
+                    },
+                    "outlier_count_returned": 0,
+                    "result": []
+                }
 
-            mean_value, std_value, n = stats_row
-            if std_value is None or std_value == 0 or n == 0:
-                return {"error": "Cannot detect outliers: zero variance or empty dataset."}
+            if std_val == 0 or pd.isna(std_val):
+                continue
 
-            # Directly interpolate calculated stats for high-performance outlier discovery
-            outliers = con.execute(f"""
-                SELECT
-                    *,
-                    ABS(({col_ref} - {float(mean_value)}) / {float(std_value)}) AS z_score
-                FROM source
-                WHERE ABS(({col_ref} - {float(mean_value)}) / {float(std_value)}) > {float(z_threshold)}
-                ORDER BY z_score DESC
-                LIMIT {int(limit)}
-            """).df()
+            z_scores = np.abs((series - mean_val) / std_val)
+            outliers_mask = z_scores > z_threshold
+            
+            outlier_indices = series[outliers_mask].index
+            outlier_data = df.loc[outlier_indices].copy()
+            outlier_data["z_score"] = z_scores[outliers_mask]
+            
+            # Sort by z-score and limit
+            outlier_data = outlier_data.sort_values("z_score", ascending=False).head(limit)
+            
+            col_summary = {
+                "column": col,
+                "count": len(outlier_indices),
+                "mean": round(float(mean_val), 4),
+                "std": round(float(std_val), 4),
+                "max_z_score": round(float(z_scores.max()), 4) if not z_scores.empty else 0
+            }
+            overall_summary.append(col_summary)
 
-        return {
+            if not outlier_data.empty:
+                results[col] = _sanitize_records(outlier_data)
+                
+                # Update backward compatibility stats
+                if len(columns) == 1:
+                    single_column_stats["outlier_count_returned"] = len(outlier_data)
+                    single_column_stats["result"] = results[col]
+
+        base_res = {
             "analysis_type": "outlier",
-            "column": col,
+            "columns_analyzed": columns,
             "z_threshold": z_threshold,
-            "population_stats": {
-                "mean": round(float(mean_value), 4),
-                "std": round(float(std_value), 4),
-                "n": int(n),
-            },
-            "outlier_count_returned": len(outliers),
-            "result": _sanitize_records(outliers),
+            "summary": overall_summary,
+            "results": results,
             "status": "success",
+            "message": f"Detected outliers in {len(results)} out of {len(columns)} columns analyzed."
         }
+        
+        if len(columns) == 1:
+            base_res.update(single_column_stats)
+            
+        return base_res
 
     def _run_group_compare(
         self,
@@ -673,6 +744,405 @@ class AnalyzeDatasetTool(BaseTool):
             "status": "success",
         }
 
+    def _run_regression(
+        self,
+        file_path: str,
+        target: Optional[str],
+        predictors: Optional[List[str]],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not target or not predictors:
+            return {"error": "regression requires 'target_column' and 'predictor_columns'."}
+
+        all_cols = [target] + predictors
+        validation_error = _validate_requested_columns(file_path, all_cols)
+        if validation_error:
+            return validation_error
+
+        df = self._load_dataframe(file_path, where_body)
+        df_clean = df[all_cols].apply(pd.to_numeric, errors="coerce").dropna()
+
+        if len(df_clean) < len(predictors) + 2:
+            return {"error": f"Not enough data points for regression. Need at least {len(predictors) + 2} valid records after cleaning."}
+
+        Y = df_clean[target].values
+        X = df_clean[predictors].values
+        # Add constant for intercept
+        X_with_const = np.column_stack([np.ones(X.shape[0]), X])
+
+        try:
+            # Solve Normal Equation using least squares
+            beta, residuals, rank, s = np.linalg.lstsq(X_with_const, Y, rcond=None)
+            
+            # Calculate R-squared
+            y_mean = np.mean(Y)
+            ss_tot = np.sum((Y - y_mean)**2)
+            ss_res = np.sum((Y - np.dot(X_with_const, beta))**2)
+            r_sq = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+            coef_map = {"intercept": round(float(beta[0]), 6)}
+            for i, pred in enumerate(predictors):
+                coef_map[pred] = round(float(beta[i+1]), 6)
+
+            return {
+                "analysis_type": "regression",
+                "target_column": target,
+                "predictor_columns": predictors,
+                "n": len(df_clean),
+                "result": {
+                    "coefficients": coef_map,
+                    "r_squared": round(float(r_sq), 4),
+                    "residual_sum_of_squares": round(float(ss_res), 4),
+                    "standard_error": round(float(np.sqrt(ss_res / (len(Y) - len(beta)))), 6) if len(Y) > len(beta) else None
+                },
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Regression calculation failed: {str(e)}"}
+
+    def _run_process_capability(
+        self,
+        file_path: str,
+        columns: List[str],
+        lsl: Optional[float],
+        usl: Optional[float],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or len(columns) != 1:
+            return {"error": "process_capability requires exactly one numeric column in 'columns'."}
+        if lsl is None and usl is None:
+            return {"error": "process_capability requires at least one of 'lsl' or 'usl' parameters."}
+
+        validation_error = _validate_requested_columns(file_path, columns)
+        if validation_error:
+            return validation_error
+
+        df = self._load_dataframe(file_path, where_body)
+        series = pd.to_numeric(df[columns[0]], errors="coerce").dropna()
+
+        if len(series) < 10:
+            return {"error": "Need at least 10 valid numeric records for process capability analysis."}
+
+        mean_val = float(series.mean())
+        std_val = float(series.std())
+        
+        if std_val == 0:
+            return {"error": "Process standard deviation is zero. Capability cannot be computed for constant processes."}
+
+        cp = (usl - lsl) / (6 * std_val) if (lsl is not None and usl is not None) else None
+        cpu = (usl - mean_val) / (3 * std_val) if usl is not None else None
+        cpl = (mean_val - lsl) / (3 * std_val) if lsl is not None else None
+        
+        cpk = None
+        if cpu is not None and cpl is not None:
+            cpk = min(cpu, cpl)
+        elif cpu is not None:
+            cpk = cpu
+        elif cpl is not None:
+            cpk = cpl
+
+        return {
+            "analysis_type": "process_capability",
+            "column": columns[0],
+            "n": len(series),
+            "lsl": lsl,
+            "usl": usl,
+            "mean": round(mean_val, 4),
+            "std_dev": round(std_val, 4),
+            "result": {
+                "cp": round(cp, 4) if cp is not None else None,
+                "cpk": round(cpk, 4) if cpk is not None else None,
+                "cpu": round(cpu, 4) if cpu is not None else None,
+                "cpl": round(cpl, 4) if cpl is not None else None,
+            },
+            "interpretation_hint": (
+                "Cpk > 1.33: Capable process. "
+                "Cpk < 1.00: Inadequate process (potential for defects)."
+            ),
+            "status": "success"
+        }
+
+    def _run_pareto(
+        self,
+        file_path: str,
+        columns: List[str],
+        group_by: Optional[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or len(columns) != 1 or not group_by:
+            return {"error": "pareto requires one numeric column in 'columns' and a 'group_by' column."}
+
+        validation_error = _validate_requested_columns(file_path, columns + [group_by])
+        if validation_error:
+            return validation_error
+
+        col_ref = sql_column_reference(columns[0])
+        group_ref = sql_column_reference(group_by)
+        source_query = self._build_source_query(file_path, where_body)
+
+        with duckdb.connect(database=":memory:") as con:
+            df = con.execute(f"""
+                SELECT
+                    {group_ref} AS category,
+                    SUM({col_ref}) AS total_value
+                FROM ({source_query})
+                GROUP BY 1
+                ORDER BY total_value DESC
+            """).df()
+
+        if df.empty:
+            return {"error": "No data found for Pareto analysis."}
+
+        total_sum = df["total_value"].sum()
+        df["percentage"] = (df["total_value"] / total_sum) * 100
+        df["cumulative_percentage"] = df["percentage"].cumsum()
+
+        # Find the "Vital Few" (up to 80% cumulative)
+        vital_few = df[df["cumulative_percentage"] <= 85].copy()
+        
+        return {
+            "analysis_type": "pareto",
+            "column": columns[0],
+            "group_by": group_by,
+            "total_sum": round(float(total_sum), 2),
+            "result": _sanitize_records(df),
+            "vital_few_count": len(vital_few),
+            "message": f"Identified {len(vital_few)} categories contributing to ~80% of total {columns[0]}.",
+            "status": "success"
+        }
+
+    def _run_trend_projection(
+        self,
+        file_path: str,
+        target_column: Optional[str],
+        timestamp_column: Optional[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not target_column or not timestamp_column:
+            return {"error": "trend_projection requires 'target_column' and 'timestamp_column'."}
+
+        validation_error = _validate_requested_columns(file_path, [target_column, timestamp_column])
+        if validation_error:
+            return validation_error
+
+        source_query = self._build_source_query(file_path, where_body)
+        ts_ref = sql_column_reference(timestamp_column)
+        target_ref = sql_column_reference(target_column)
+
+        with duckdb.connect(database=":memory:") as con:
+            # Convert timestamp to epoch seconds for regression
+            df = con.execute(f"""
+                SELECT
+                    epoch({ts_ref}) AS t_numeric,
+                    {target_ref} AS val
+                FROM ({source_query})
+                ORDER BY t_numeric
+            """).df()
+
+        df_clean = df.apply(pd.to_numeric, errors="coerce").dropna()
+        if len(df_clean) < 5:
+            return {"error": "Not enough valid numeric data points for trend projection (need at least 5)."}
+
+        X = df_clean["t_numeric"].values
+        Y = df_clean["val"].values
+        
+        # Simple linear regression: Y = mx + b
+        slope, intercept, r_value, p_value, std_err = stats.linregress(X, Y)
+
+        trend_direction = "increasing" if slope > 0 else "decreasing"
+        if abs(r_value) < 0.2:
+            trend_direction = "stable / no clear linear trend"
+
+        return {
+            "analysis_type": "trend_projection",
+            "target": target_column,
+            "n": len(df_clean),
+            "result": {
+                "slope_per_second": round(float(slope), 8),
+                "intercept": round(float(intercept), 4),
+                "r_squared": round(float(r_value**2), 4),
+                "p_value": round(float(p_value), 6),
+                "trend_interpretation": trend_direction
+            },
+            "status": "success"
+        }
+
+    def _run_downsample(
+        self,
+        file_path: str,
+        columns: List[str],
+        timestamp_column: Optional[str],
+        limit: int,
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or not timestamp_column:
+            return {"error": "downsample requires 'columns' and 'timestamp_column'."}
+
+        validation_error = _validate_requested_columns(file_path, columns + [timestamp_column])
+        if validation_error:
+            return validation_error
+
+        source_query = self._build_source_query(file_path, where_body)
+        ts_ref = sql_column_reference(timestamp_column)
+        col_refs = [sql_column_reference(c) for c in columns]
+        
+        with duckdb.connect(database=":memory:") as con:
+            # 1. Get total count
+            total_count_res = con.execute(f"SELECT COUNT(*) FROM ({source_query})").fetchone()
+            total_count = total_count_res[0] if total_count_res else 0
+            
+            if total_count <= limit:
+                # No downsampling needed if dataset is already small
+                result = con.execute(f"SELECT * FROM ({source_query}) ORDER BY {ts_ref}").df()
+                return {
+                    "analysis_type": "downsample",
+                    "n_original": total_count,
+                    "n_returned": len(result),
+                    "result": _sanitize_records(result),
+                    "status": "success"
+                }
+
+            # 2. Bucket-based aggregation (simplified LTTB-like approach)
+            bucket_size = max(1, total_count // limit)
+            avg_exprs = ", ".join([f"AVG({ref}) AS \"{c}\"" for c, ref in zip(columns, col_refs)])
+            
+            result = con.execute(f"""
+                WITH numbered AS (
+                    SELECT *, (row_number() OVER (ORDER BY {ts_ref}) - 1) / {bucket_size} AS bucket_id
+                    FROM ({source_query})
+                )
+                SELECT
+                    MIN({ts_ref}) AS {ts_ref},
+                    {avg_exprs}
+                FROM numbered
+                GROUP BY bucket_id
+                ORDER BY 1
+                LIMIT {int(limit)}
+            """).df()
+
+        return {
+            "analysis_type": "downsample",
+            "n_original": total_count,
+            "n_returned": len(result),
+            "bucket_size": bucket_size,
+            "result": _sanitize_records(result),
+            "message": f"Dataset downsampled from {total_count} to {len(result)} records using bucketed averages.",
+            "status": "success"
+        }
+
+    def _run_correlation_matrix(
+        self,
+        file_path: str,
+        where_body: str,
+    ) -> Dict[str, Any]:
+        df = self._load_dataframe(file_path, where_body)
+        # Auto-select numeric columns
+        numeric_df = df.select_dtypes(include=[np.number])
+        
+        if numeric_df.empty:
+            return {"error": "No numeric columns found for correlation matrix."}
+            
+        if len(numeric_df.columns) < 2:
+            return {"error": "Need at least two numeric columns for a correlation matrix."}
+
+        corr_matrix = numeric_df.corr().round(4)
+        
+        # Flatten matrix to find top relationships (excluding self-correlation)
+        flat_corr = corr_matrix.unstack()
+        flat_corr = flat_corr[flat_corr.index.get_level_values(0) != flat_corr.index.get_level_values(1)]
+        top_corr = flat_corr.abs().sort_values(ascending=False).head(10)
+        
+        summary = []
+        seen = set()
+        for (c1, c2), val in top_corr.items():
+            pair = tuple(sorted((c1, c2)))
+            if pair not in seen:
+                actual_val = corr_matrix.loc[c1, c2]
+                summary.append({
+                    "pair": f"{c1} vs {c2}",
+                    "correlation": float(actual_val),
+                    "interpretation": _interpret_correlation(float(actual_val))
+                })
+                seen.add(pair)
+
+        return {
+            "analysis_type": "correlation_matrix",
+            "columns_analyzed": list(numeric_df.columns),
+            "matrix": corr_matrix.to_dict(),
+            "top_relationships": summary[:5],
+            "status": "success"
+        }
+
+    def _run_seasonal_decomposition(
+        self,
+        file_path: str,
+        columns: List[str],
+        timestamp_column: Optional[str],
+        period: Optional[int],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if not columns or len(columns) != 1 or not timestamp_column:
+            return {"error": "seasonal_decomposition requires exactly one column in 'columns' and 'timestamp_column'."}
+            
+        validation_error = _validate_requested_columns(file_path, columns + [timestamp_column])
+        if validation_error:
+            return validation_error
+
+        from statsmodels.tsa.seasonal import seasonal_decompose
+        
+        df = self._load_dataframe(file_path, where_body)
+        df[timestamp_column] = pd.to_datetime(df[timestamp_column])
+        df = df.sort_values(timestamp_column).set_index(timestamp_column)
+        
+        # Ensure we have numeric data and handle missing values for decomposition
+        series = pd.to_numeric(df[columns[0]], errors="coerce").interpolate(method='linear')
+        
+        if series.isna().any():
+            series = series.fillna(method='bfill').fillna(method='ffill')
+
+        if len(series) < (period * 2 if period else 10):
+            return {"error": "Not enough data points for seasonal decomposition with the given period."}
+
+        try:
+            result = seasonal_decompose(series, model='additive', period=period)
+            
+            # Create a summary of the components
+            # We'll return a downsampled version of the components to keep the context size manageable
+            decomp_df = pd.DataFrame({
+                "observed": result.observed,
+                "trend": result.trend,
+                "seasonal": result.seasonal,
+                "resid": result.resid
+            }).dropna()
+            
+            # Downsample to 20 points for the summary
+            step = max(1, len(decomp_df) // 20)
+            summary_df = decomp_df.iloc[::step].head(20).reset_index()
+            
+            # Trend direction
+            trend_values = decomp_df["trend"].values
+            slope = (trend_values[-1] - trend_values[0]) / len(trend_values)
+            trend_desc = "increasing" if slope > 0 else "decreasing"
+            
+            # Seasonality strength (variance ratio)
+            seasonal_var = np.var(result.seasonal.dropna())
+            resid_var = np.var(result.resid.dropna())
+            total_var = np.var(series)
+            seasonal_strength = round(float(seasonal_var / total_var), 4) if total_var != 0 else 0
+
+            return {
+                "analysis_type": "seasonal_decomposition",
+                "column": columns[0],
+                "period_used": period or result.nobs // 2, # statsmodels default if not provided
+                "trend_direction": trend_desc,
+                "seasonal_strength_ratio": seasonal_strength,
+                "result_summary": _sanitize_records(summary_df),
+                "message": f"Decomposition successful. Seasonal component explains {seasonal_strength*100}% of variance.",
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Seasonal decomposition failed: {str(e)}"}
+
     def execute(
         self,
         file_path: str,
@@ -690,49 +1160,87 @@ class AnalyzeDatasetTool(BaseTool):
         order: str = "desc",
         limit: int = 10,
         z_threshold: float = 3.0,
+        period: Optional[int] = None,
+        target_column: Optional[str] = None,
+        predictor_columns: Optional[List[str]] = None,
+        lsl: Optional[float] = None,
+        usl: Optional[float] = None,
         where_clause: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not os.path.exists(file_path):
-            return {"error": f"File not found at path: {file_path}"}
+            return {"error": f"File not found at path: {file_path}", "status": "fail"}
 
         columns = columns or []
         where_body = _merge_where_clauses(where_clause, filters)
 
         try:
+            res = {}
             if analysis_type == "correlation":
-                return self._run_correlation(
+                res = self._run_correlation(
                     file_path, columns, granularity, group_by, method, where_body
                 )
-            if analysis_type == "describe":
-                return self._run_describe(file_path, columns, where_body)
-            if analysis_type == "ratio_rank":
-                return self._run_ratio_rank(
+            elif analysis_type == "describe":
+                res = self._run_describe(file_path, columns, where_body)
+            elif analysis_type == "ratio_rank":
+                res = self._run_ratio_rank(
                     file_path, numerator, denominator, group_by, ratio_method, order, limit, where_body
                 )
-            if analysis_type == "outlier":
-                return self._run_outlier(file_path, columns, z_threshold, limit, where_body)
-            if analysis_type == "group_compare":
-                return self._run_group_compare(file_path, columns, group_by, where_body)
-            if analysis_type == "rolling_stats":
-                return self._run_rolling_stats(
+            elif analysis_type == "outlier":
+                res = self._run_outlier(file_path, columns, z_threshold, limit, where_body)
+            elif analysis_type == "group_compare":
+                res = self._run_group_compare(file_path, columns, group_by, where_body)
+            elif analysis_type == "rolling_stats":
+                res = self._run_rolling_stats(
                     file_path, columns, timestamp_column, window_size, group_by, where_body
                 )
-            if analysis_type == "lag_analysis":
-                return self._run_lag_analysis(
+            elif analysis_type == "lag_analysis":
+                res = self._run_lag_analysis(
                     file_path, columns, timestamp_column, lag_steps, group_by, method, where_body
                 )
-            if analysis_type == "shift_analysis":
-                return self._run_shift_analysis(
+            elif analysis_type == "shift_analysis":
+                res = self._run_shift_analysis(
                     file_path, columns, timestamp_column, where_body
                 )
+            elif analysis_type == "regression":
+                res = self._run_regression(
+                    file_path, target_column, predictor_columns, where_body
+                )
+            elif analysis_type == "process_capability":
+                res = self._run_process_capability(
+                    file_path, columns, lsl, usl, where_body
+                )
+            elif analysis_type == "pareto":
+                res = self._run_pareto(
+                    file_path, columns, group_by, where_body
+                )
+            elif analysis_type == "trend_projection":
+                res = self._run_trend_projection(
+                    file_path, target_column, timestamp_column, where_body
+                )
+            elif analysis_type == "downsample":
+                res = self._run_downsample(
+                    file_path, columns, timestamp_column, limit, where_body
+                )
+            elif analysis_type == "correlation_matrix":
+                res = self._run_correlation_matrix(
+                    file_path, where_body
+                )
+            elif analysis_type == "seasonal_decomposition":
+                res = self._run_seasonal_decomposition(
+                    file_path, columns, timestamp_column, period, where_body
+                )
+            else:
+                res = {
+                    "error": f"Unsupported analysis_type: {analysis_type}",
+                    "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition"],
+                }
 
-            return {
-                "error": f"Unsupported analysis_type: {analysis_type}",
-                "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis"],
-            }
+            if "error" in res and "status" not in res:
+                res["status"] = "fail"
+            return res
         except Exception as e:
-            return {"error": f"Analysis failed: {str(e)}"}
+            return {"error": f"Analysis failed: {str(e)}", "status": "fail"}
 
 
 ToolRegistry.register(AnalyzeDatasetTool())

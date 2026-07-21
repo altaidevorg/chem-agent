@@ -9,11 +9,13 @@ This skill enables the agent to perform sophisticated analysis on large-scale in
 
 ## 🚀 Analytical Workflow
 
-### 1. Schema Discovery (Always Start Here)
-Never assume the column names or data types of a dataset. Use the `inspect_dataset` tool to understand the file structure.
-- **Goal**: Identify key columns (e.g., `timestamp`, `batch_id`, `sensor_value`, `yield`).
-- **Action**: `inspect_dataset(file_path="data/production_logs.csv")`
-- **Important**: Copy `sql_reference` values exactly. Do not rename columns (e.g. never convert `"Machine ID"` to `Machine_ID`).
+### 1. Schema & Health Discovery (Always Start Here)
+Never assume the column names, data types, or data quality of a dataset. 
+- **Schema Discovery**: Use `inspect_dataset` to understand the basic file structure.
+- **Data Quality Audit**: Use `profile_dataset_health` to detect missing values and understand the semantic meaning of each column.
+- **Goal**: Identify key columns (e.g., `timestamp`, `batch_id`) and assess data readiness.
+- **Action**: `inspect_dataset(file_path="data/production_logs.csv")` followed by `profile_dataset_health(file_path="data/production_logs.csv")`.
+- **Rule**: If you encounter an unknown dataset, you MUST run both tools before any analysis.
 
 ### 2. Targeted Filtering (SQL First)
 For files larger than 5MB or containing thousands of rows, avoid `read_file`. Instead, use `query_dataset` to extract only the relevant subset of data.
@@ -23,8 +25,25 @@ For files larger than 5MB or containing thousands of rows, avoid `read_file`. In
 
 ### 3. Statistical Analysis (Tool Required — Never Compute Mentally)
 For correlation, descriptive statistics, ratio ranking, outliers, or group comparisons, you MUST use `analyze_dataset`.
-- **Correlation**: `analyze_dataset(analysis_type="correlation", granularity="row_level", columns=["Recycled Material (%)", "Defect Rate (%)"], method="pearson")`
-- **Energy efficiency ranking**: `analyze_dataset(analysis_type="ratio_rank", numerator="Energy Consumption (kWh)", denominator="Production Output (Units)", group_by="Machine ID", ratio_method="sum_ratio", order="desc", limit=5)`
+
+#### 📌 Efficiency & Strategy Rules:
+- **Bulk First**: For descriptive statistics or outlier detection, do NOT call the tool separately for each column. Call it ONCE without the `columns` parameter (or with all columns) to get a full report in a single step.
+- **Matrix First**: When asked to find "the strongest relationships" or "influencing factors," ALWAYS start with `analysis_type="correlation_matrix"`. Do NOT run multiple `correlation` calls for pairs; it is slow and token-expensive.
+- **Root Cause Path**: First run a `correlation_matrix` to identify candidates, then run `regression` only on the significant variables.
+- **Meaningful Findings**: If correlations are near zero (e.g., < 0.1), report them as "independent variables." Do not keep trying different groupings unless the user specifically asks for it.
+- **Column Precision**: Use `inspect_dataset` to get exact column names. If a name has spaces, use it exactly as provided in the `sql_reference` field.
+
+#### 📈 Example Actions:
+- **Comprehensive relationship check**: `analyze_dataset(analysis_type="correlation_matrix")`
+- **Correlation**: `analyze_dataset(analysis_type="correlation", columns=["Recycled Material (%)", "Defect Rate (%)"])`
+- **Pareto (80/20 Analysis)**: `analyze_dataset(analysis_type="pareto", group_by="Machine ID", columns=["Defect Rate (%)"])`
+- **Regression (Root Cause)**: `analyze_dataset(analysis_type="regression", target_column="Yield", predictor_columns=["Temp", "Pressure"])`
+- **Process Capability (Cp/Cpk)**: `analyze_dataset(analysis_type="process_capability", columns=["Reactor Temp"], usl=85, lsl=75)`
+- **Trend Projection**: `analyze_dataset(analysis_type="trend_projection", target_column="Energy", timestamp_column="Timestamp")`
+- **Seasonal Decomposition**: `analyze_dataset(analysis_type="seasonal_decomposition", columns=["Temperature"], timestamp_column="Timestamp", period=24)`
+- **Correlation Matrix**: `analyze_dataset(analysis_type="correlation_matrix")`
+- **Downsampling (LTTB)**: `analyze_dataset(analysis_type="downsample", columns=["Temp", "Yield"], timestamp_column="Timestamp", limit=40)`
+- **Energy efficiency ranking**: `analyze_dataset(analysis_type="ratio_rank", numerator="Energy Consumption (kWh)", denominator="Production Output (Units)", group_by="Machine ID", order="asc", limit=5)`
 - **Outliers**: `analyze_dataset(analysis_type="outlier", columns=["Energy Consumption (kWh)"], z_threshold=3.0)`
 - **Group comparison**: `analyze_dataset(analysis_type="group_compare", columns=["Defect Rate (%)"], group_by="Material Category")`
 
@@ -59,4 +78,5 @@ Once tools return numeric results, interpret them in plain language. Do NOT reca
 - **Ratio Method**: Prefer `ratio_method="sum_ratio"` for efficiency metrics (total energy / total output). Use `avg_ratio` only when explicitly requested.
 - **No Guessing**: If `query_dataset` returns `did_you_mean`, replace the invalid column with `did_you_mean_sql` and retry immediately.
 - **Token Efficiency**: Do not request more than 50 rows of raw data unless absolutely necessary. Summarize findings instead of printing entire tables.
+- **Reporting Weak Results**: If correlations or statistical tests show "negligible" or "insignificant" results, REPORT THIS as a valid finding. Do not loop infinitely trying to find strong patterns in noisy or independent data.
 - **Fallback**: If a SQL query fails due to complex JSON nesting, use `inspect_dataset` to see the parsed structure first.

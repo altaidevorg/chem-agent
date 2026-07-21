@@ -164,6 +164,101 @@ class QueryDatasetTool(BaseTool):
             }
 
 
+class ProfileDatasetHealthTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "profile_dataset_health"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Performs a comprehensive health check on a dataset. Detects missing values, "
+            "unique value counts, and identifies the semantic meaning of columns "
+            "(e.g., categorical, numeric, temporal). Use this for data quality audits."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The absolute or relative local path to the target file (.csv or .jsonl)."
+                }
+            },
+            "required": ["file_path"]
+        }
+
+    def execute(self, file_path: str) -> Dict[str, Any]:
+        """Performs a comprehensive data quality and health profile."""
+        if not os.path.exists(file_path):
+            return {"error": f"File not found at path: {file_path}"}
+
+        try:
+            escaped_path = file_path.replace("'", "''")
+            with duckdb.connect(database=':memory:') as con:
+                # 1. Get schema info
+                cols_df = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
+                col_names = cols_df["column_name"].tolist()
+                
+                # 2. Get total row count
+                total_rows_res = con.execute(f"SELECT COUNT(*) FROM '{escaped_path}'").fetchone()
+                total_rows = total_rows_res[0] if total_rows_res else 0
+                
+                if total_rows == 0:
+                    return {
+                        "file_path": file_path, 
+                        "total_rows": 0, 
+                        "status": "success",
+                        "message": "Dataset is empty."
+                    }
+
+                # 3. Dynamic SQL for nulls and unique values
+                null_counts_expr = ", ".join([f"COUNT(*) - COUNT({sql_column_reference(c)}) AS \"null_{c}\"" for c in col_names])
+                unique_counts_expr = ", ".join([f"COUNT(DISTINCT {sql_column_reference(c)}) AS \"unique_{c}\"" for c in col_names])
+                
+                stats_df = con.execute(f"SELECT {null_counts_expr}, {unique_counts_expr} FROM '{escaped_path}'").df()
+                
+                health_report = []
+                for col in col_names:
+                    null_count = int(stats_df[f"null_{col}"].iloc[0])
+                    unique_count = int(stats_df[f"unique_{col}"].iloc[0])
+                    dtype = cols_df[cols_df["column_name"] == col]["column_type"].iloc[0]
+                    
+                    # Basic semantic detection logic
+                    semantic_type = "string"
+                    if any(t in dtype.upper() for t in ["INT", "DOUBLE", "DECIMAL", "FLOAT", "HUGEINT"]):
+                        semantic_type = "numeric"
+                    elif any(t in dtype.upper() for t in ["TIME", "DATE", "TIMESTAMP"]):
+                        semantic_type = "temporal"
+                    
+                    # If few unique values relative to total rows, it's likely categorical
+                    if unique_count < 50 and total_rows > 200:
+                        semantic_type = "categorical"
+                    
+                    health_report.append({
+                        "column": col,
+                        "data_type": dtype,
+                        "semantic_type": semantic_type,
+                        "null_count": null_count,
+                        "null_percentage": round((null_count / total_rows) * 100, 2),
+                        "unique_count": unique_count,
+                        "cardinality_ratio": round((unique_count / total_rows), 4)
+                    })
+
+                return {
+                    "file_path": file_path,
+                    "total_rows": total_rows,
+                    "columns_analyzed": len(col_names),
+                    "health_report": health_report,
+                    "status": "success"
+                }
+        except Exception as e:
+            return {"error": f"Failed to profile dataset: {str(e)}"}
+
+
 # Register tools
 ToolRegistry.register(InspectDatasetTool())
 ToolRegistry.register(QueryDatasetTool())
+ToolRegistry.register(ProfileDatasetHealthTool())
