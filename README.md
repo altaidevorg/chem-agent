@@ -94,15 +94,20 @@ The agent is equipped with specialized "skills" that allow it to interact with c
 ### Industrial Data Analytics (DuckDB & Statistics)
 - **`inspect_dataset`**: Explores schema and data types of large CSV/JSONL files without loading them fully into memory.
 - **`query_dataset`**: Executes high-performance SQL queries on local datasets using DuckDB (supports JOINs and complex filtering).
+- **`profile_dataset_health`**: Performs a comprehensive audit of dataset quality (Null analysis, Uniqueness, Semantic Type discovery).
 - **`analyze_dataset`**: Performs deterministic statistical analysis:
     - **Descriptive Stats**: Mean, median, std dev, min/max.
-    - **Correlation**: Pearson/Spearman (row-level or grouped).
-    - **Ratio Ranking**: Efficiency analysis (e.g., Energy/Unit) with custom aggregation methods.
-    - **Outlier Detection**: Z-score based anomaly detection.
-    - **Time-Series**: 
-        - `rolling_stats`: Moving averages and standard deviations.
+    - **Correlation & Matrix**: Pearson/Spearman row-level, grouped, or full automated Correlation Matrix.
+    - **Regression**: Multiple regression analysis to identify root causes and quantify influences.
+    - **Process Capability (Cp/Cpk)**: Evaluates if a process is within specification limits (USL/LSL).
+    - **Pareto Analysis**: Identifies the "vital few" factors (80/20 rule).
+    - **Time-Series & Forecasting**: 
+        - `trend_projection`: Linear trend analysis with slope interpretation.
+        - `seasonal_decomposition`: STL-like decomposition into Trend, Seasonal, and Residual.
+        - `downsampling`: Intelligent data reduction for massive datasets.
+        - `rolling_stats`: Moving averages and volatility detection.
         - `lag_analysis`: Cross-correlation with temporal delays.
-        - `shift_analysis`: Automatic performance comparison across Morning/Evening/Night shifts.
+        - `shift_analysis`: Performance comparison across Morning/Evening/Night shifts.
 
 ### System & File Operations
 - **`read_file`**: Extracts text from `.txt`, `.md`, `.json`, and even `.pdf` documents.

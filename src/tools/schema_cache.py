@@ -206,7 +206,9 @@ class SchemaCache:
         invalid = []
         suggestions = {}
         for col in column_names:
-            if col not in available:
+            # Check for exact match OR match without double quotes (handling agent quoting artifacts)
+            unquoted = col.strip('"')
+            if col not in available and unquoted not in available:
                 invalid.append(col)
                 suggestion = cls.suggest_column(col, available)
                 if suggestion:
