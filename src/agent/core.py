@@ -5,6 +5,16 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        # Handle numpy types without explicitly importing numpy
+        if hasattr(obj, "item") and callable(getattr(obj, "item")):
+            return obj.item()
+        return super().default(obj)
+
+def safe_json_dumps(obj, **kwargs):
+    return json.dumps(obj, cls=CustomEncoder, ensure_ascii=False, **kwargs)
+
 from src.vllm_client import get_vllm_client
 from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR
 from src.agent.prompts import SYSTEM_PROMPT
@@ -52,7 +62,7 @@ class ChemistryAgent:
         try:
             os.makedirs(os.path.dirname(TELEMETRY_LOG_FILE), exist_ok=True)
             with open(TELEMETRY_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+                f.write(safe_json_dumps(log_entry) + "\n")
         except Exception as e:
             print(f"[Logger Error] Failed to write telemetry: {e}")
 
@@ -252,13 +262,13 @@ class ChemistryAgent:
                     })
                     
                     # Save the tool response to memory
-                    self.memory.add_tool_response(tool_call.id, function_name, json.dumps(result))
+                    self.memory.add_tool_response(tool_call.id, function_name, safe_json_dumps(result))
                     
                     run_messages.append({
                         "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": function_name,
-                        "content": json.dumps(result)
+                        "content": safe_json_dumps(result)
                     })
                 continue
 
@@ -288,7 +298,7 @@ class ChemistryAgent:
                                     "fallback": "xml"
                                 })
                                 
-                                response_content = f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{json.dumps(result)}\n</tool_response>"
+                                response_content = f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{safe_json_dumps(result)}\n</tool_response>"
                                 
                                 # Save the XML tool response to memory as a user message (fallback pattern)
                                 self.memory.add_message("user", response_content)

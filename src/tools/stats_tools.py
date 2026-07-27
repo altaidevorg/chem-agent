@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 import duckdb
 import pandas as pd
 import numpy as np
-from scipy import stats
+from scipy import stats, optimize
+import statsmodels.api as sm
+from statsmodels.formula.api import ols
 
 from src.tools.base import BaseTool, ToolRegistry
 from src.tools.schema_cache import SchemaCache, sql_column_reference
@@ -1243,4 +1245,147 @@ class AnalyzeDatasetTool(BaseTool):
             return {"error": f"Analysis failed: {str(e)}", "status": "fail"}
 
 
+class AnalyzeDesignOfExperimentsTool(BaseTool):
+    """
+    Analyzes experimental data (DoE) to calculate main effects, perform ANOVA, 
+    and optimize for a target response using Response Surface Methodology (RSM).
+    """
+
+    @property
+    def name(self) -> str:
+        return "analyze_doe_results"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Analyzes Design of Experiments (DoE) data. Calculates main effects, "
+            "performs ANOVA to test significance, and suggests optimal factor levels "
+            "to maximize/minimize the response."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "experiment_data": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "List of experiment records, each as a dict of factor values and the result."
+                },
+                "target_column": {
+                    "type": "string",
+                    "description": "The response/result column to optimize (e.g., 'yield', 'score')."
+                },
+                "factors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The independent variables (factors) to analyze."
+                },
+                "goal": {
+                    "type": "string",
+                    "enum": ["maximize", "minimize"],
+                    "default": "maximize",
+                    "description": "Whether to maximize or minimize the target response."
+                }
+            },
+            "required": ["experiment_data", "target_column", "factors"]
+        }
+
+    def execute(
+        self, 
+        experiment_data: List[Dict[str, Any]], 
+        target_column: str, 
+        factors: List[str], 
+        goal: str = "maximize"
+    ) -> Dict[str, Any]:
+        try:
+            df = pd.DataFrame(experiment_data)
+            
+            # 1. Validation
+            missing_cols = [c for c in factors + [target_column] if c not in df.columns]
+            if missing_cols:
+                return {"error": f"Missing columns in data: {missing_cols}"}
+            
+            if len(df) < len(factors) + 1:
+                return {"error": f"Need at least {len(factors) + 1} data points for analysis."}
+
+            # 2. Fit Model (Response Surface)
+            # We use a simple linear model with main effects. 
+            # In a real DoE tool, we might add interactions or quadratic terms if n is high enough.
+            formula = f"Q('{target_column}') ~ " + " + ".join([f"Q('{f}')" for f in factors])
+            model = ols(formula, data=df).fit()
+            
+            # 3. ANOVA
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            anova_report = []
+            for idx, row in anova_table.iterrows():
+                anova_report.append({
+                    "source": str(idx),
+                    "sum_sq": round(float(row['sum_sq']), 4),
+                    "df": int(row['df']),
+                    "f_value": round(float(row['F']), 4) if not pd.isna(row['F']) else None,
+                    "p_value": round(float(row['PR(>F)']), 6) if not pd.isna(row['PR(>F)']) else None,
+                    "significant": bool(row['PR(>F)'] < 0.05) if not pd.isna(row['PR(>F)']) else False
+                })
+
+            # 4. Main Effects
+            effects = {}
+            for f in factors:
+                # Effect = Mean(High) - Mean(Low) for the factor
+                # Simple approximation for continuous: coefficient * range
+                f_min = df[f].min()
+                f_max = df[f].max()
+                coef = model.params[f"Q('{f}')"]
+                impact = coef * (f_max - f_min)
+                effects[f] = {
+                    "coefficient": round(float(coef), 4),
+                    "total_impact": round(float(impact), 4),
+                    "direction": "positive" if impact > 0 else "negative"
+                }
+
+            # 5. Optimization
+            # Find the bounds for each factor
+            bounds = []
+            x0 = []
+            for f in factors:
+                bounds.append((df[f].min(), df[f].max()))
+                x0.append(df[f].mean())
+
+            def objective(x):
+                # Predict response for given x
+                input_dict = {f: [val] for f, val in zip(factors, x)}
+                input_df = pd.DataFrame(input_dict)
+                pred = model.predict(input_df)[0]
+                return -pred if goal == "maximize" else pred
+
+            res = optimize.minimize(objective, x0, bounds=bounds, method='L-BFGS-B')
+            
+            optimal_settings = {}
+            for i, f in enumerate(factors):
+                optimal_settings[f] = round(float(res.x[i]), 4)
+            
+            predicted_optimum = -res.fun if goal == "maximize" else res.fun
+
+            return {
+                "status": "success",
+                "anova": anova_report,
+                "main_effects": effects,
+                "r_squared": round(float(model.rsquared), 4),
+                "optimization": {
+                    "goal": goal,
+                    "optimal_settings": optimal_settings,
+                    "predicted_response": round(float(predicted_optimum), 4)
+                },
+                "summary": (
+                    f"Model explaining {round(model.rsquared*100, 1)}% of variance. "
+                    f"Key factor: {max(effects, key=lambda k: abs(effects[k]['total_impact']))}."
+                )
+            }
+            
+        except Exception as e:
+            return {"error": f"DoE analysis failed: {str(e)}"}
+
+
 ToolRegistry.register(AnalyzeDatasetTool())
+ToolRegistry.register(AnalyzeDesignOfExperimentsTool())

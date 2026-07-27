@@ -1,5 +1,6 @@
 # src/tools/rdkit_tools.py
 import json
+import math
 import os
 import re
 import sys
@@ -1518,6 +1519,269 @@ class CheckRegulatoryComplianceTool(BaseTool):
         except Exception as e:
             return {"error": f"Regulatory check failed: {str(e)}"}
 
+class CalculateHansenParametersTool(BaseTool):
+    """
+    Calculates Hansen Solubility Parameters (HSP) using Van Krevelen 
+    Group Contribution Method. Estimates Dispersion (dD), Polar (dP), 
+    and Hydrogen Bonding (dH) components.
+    """
+
+    # Van Krevelen Group Contributions (simplified)
+    # Fd (Dispersive), Fp (Polar), Eh (H-bonding energy), V (Molar volume)
+    # Values based on standard Van Krevelen tables
+    _GROUPS = [
+        # Halogens
+        ("[Cl]", {"fd": 450, "fp": 550, "eh": 400, "v": 24.0, "name": "Chloride"}),
+        ("[Br]", {"fd": 550, "fp": 340, "eh": 0, "v": 30.0, "name": "Bromide"}),
+        ("[F]", {"fd": 80, "fp": 420, "eh": 0, "v": 10.0, "name": "Fluoride"}),
+        
+        # Carbonyls & Oxygen groups
+        ("[CX3H1](=[OX1])", {"fd": 470, "fp": 800, "eh": 4500, "v": 17.0, "name": "Aldehyde"}),
+        ("[CX3](=[OX1])[OX2H0]", {"fd": 390, "fp": 400, "eh": 7000, "v": 18.0, "name": "Ester"}),
+        ("[CX3](=[OX1])", {"fd": 290, "fp": 770, "eh": 2000, "v": 10.8, "name": "Ketone"}),
+        ("[CX3](=[OX1])[OX2H1]", {"fd": 530, "fp": 420, "eh": 10000, "v": 28.5, "name": "Acid"}),
+        ("[OX2H1]", {"fd": 210, "fp": 500, "eh": 20000, "v": 10.0, "name": "Hydroxyl"}),
+        ("[OX2H0]", {"fd": 100, "fp": 400, "eh": 3000, "v": 3.8, "name": "Ether"}),
+        
+        # Nitrogen groups
+        ("[NX3H2]", {"fd": 280, "fp": 400, "eh": 10000, "v": 19.2, "name": "Amine (Primary)"}),
+        ("[NX3H1]", {"fd": 160, "fp": 210, "eh": 3100, "v": 4.5, "name": "Amine (Secondary)"}),
+        ("[NX3H0]", {"fd": 20, "fp": 800, "eh": 5000, "v": -9.0, "name": "Amine (Tertiary)"}),
+        ("[CX2]#[NX1]", {"fd": 350, "fp": 1100, "eh": 2500, "v": 24.0, "name": "Nitrile"}),
+        
+        # Hydrocarbons (Aromatic)
+        ("[cX3H1]", {"fd": 190, "fp": 17, "eh": 0, "v": 16.7, "name": "Aromatic CH"}),
+        ("[cX3H0]", {"fd": 143, "fp": 34, "eh": 0, "v": 11.5, "name": "Aromatic C"}),
+        
+        # Hydrocarbons (Aliphatic)
+        ("[CH3;X4]", {"fd": 420, "fp": 0, "eh": 0, "v": 33.5, "name": "Methyl"}),
+        ("[CH2;X4]", {"fd": 270, "fp": 0, "eh": 0, "v": 16.1, "name": "Methylene"}),
+        ("[CH1;X4]", {"fd": 80, "fp": 0, "eh": 0, "v": -1.0, "name": "Methine"}),
+        ("[CH0;X4]", {"fd": -70, "fp": 0, "eh": 0, "v": -19.2, "name": "Quaternary C"}),
+        ("[CH2;X3]", {"fd": 400, "fp": 0, "eh": 0, "v": 28.5, "name": "Vinyl =CH2"}),
+        ("[CH1;X3]", {"fd": 200, "fp": 0, "eh": 0, "v": 13.5, "name": "Vinyl =CH-"}),
+        ("[CH0;X3]", {"fd": 70, "fp": 0, "eh": 0, "v": -5.5, "name": "Vinyl =C<"}),
+    ]
+
+    @property
+    def name(self) -> str:
+        return "calculate_hansen_parameters"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Calculates Hansen Solubility Parameters (dD, dP, dH) using the Van Krevelen group contribution method. "
+            "Helps predict solubility, solvent compatibility, and resin behavior."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+            
+            # Ensure hydrogens are added for correct valence matching if needed, 
+            # though our SMARTS are designed for heavy atoms.
+            
+            total_fd = 0.0
+            total_fp2 = 0.0
+            total_eh = 0.0
+            total_v = 0.0
+            
+            matched_atoms = set()
+            details = []
+            
+            # Pre-compile SMARTS patterns
+            compiled_groups = []
+            for smarts, data in self._GROUPS:
+                compiled_groups.append((Chem.MolFromSmarts(smarts), data))
+            
+            # Apply group contribution
+            # We sort groups by complexity (number of atoms) to ensure specific groups match first
+            for pattern, data in compiled_groups:
+                if pattern is None: continue
+                matches = mol.GetSubstructMatches(pattern)
+                for match in matches:
+                    # Check if any atom in this match was already counted in a more specific group
+                    if any(idx in matched_atoms for idx in match):
+                        continue
+                    
+                    total_fd += data["fd"]
+                    total_fp2 += data["fp"]**2
+                    total_eh += data["eh"]
+                    total_v += data["v"]
+                    
+                    for idx in match:
+                        matched_atoms.add(idx)
+                    
+                    details.append(data["name"])
+
+            # Safety check for unassigned heavy atoms
+            unmatched_heavy = [a.GetSymbol() for a in mol.GetAtoms() if a.GetIdx() not in matched_atoms and a.GetAtomicNum() > 1]
+            
+            if total_v <= 0:
+                return {"error": "Could not determine molar volume for this structure. Group contribution may be incomplete."}
+
+            # Final calculations (Van Krevelen equations)
+            dd = total_fd / total_v
+            dp = math.sqrt(total_fp2) / total_v
+            dh = math.sqrt(total_eh / total_v)
+            dtot = math.sqrt(dd**2 + dp**2 + dh**2)
+
+            return {
+                "smiles": smiles,
+                "delta_d": round(dd, 2),
+                "delta_p": round(dp, 2),
+                "delta_h": round(dh, 2),
+                "delta_total": round(dtot, 2),
+                "molar_volume_est": round(total_v, 2),
+                "units": "MPa^0.5",
+                "groups_detected": list(set(details)),
+                "unmatched_heavy_atoms": unmatched_heavy,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"HSP calculation failed: {str(e)}"}
+
+class EstimatePkaAndLogDTool(BaseTool):
+    """
+    Estimates the pKa of ionizable groups and calculates the distribution 
+    coefficient (logD) at a given pH. Essential for food/beverage applications 
+    where pH affects solubility and flavor release.
+    """
+
+    # Typical pKa values for common industrial/food chemical groups
+    # Note: These are 'screening-grade' estimates.
+    _ACIDIC_GROUPS = [
+        ("Sulfonic Acid", Chem.MolFromSmarts("S(=O)(=O)[OH]"), -1.0),
+        ("Carboxylic Acid (Aromatic)", Chem.MolFromSmarts("c1ccccc1C(=O)[OH]"), 4.2),
+        ("Carboxylic Acid (Aliphatic)", Chem.MolFromSmarts("C(=O)[OH]"), 4.8),
+        ("Phenol", Chem.MolFromSmarts("[OX2H1]c1ccccc1"), 10.0),
+        ("Alcohol", Chem.MolFromSmarts("[OX2H1]"), 16.0), # Virtually non-ionizable in water
+    ]
+
+    _BASIC_GROUPS = [
+        ("Amine (Aliphatic)", Chem.MolFromSmarts("[NX3;H2,H1,H0;!$(N-C=O);!$(N-c)]"), 10.6),
+        ("Amine (Aromatic/Aniline)", Chem.MolFromSmarts("[NX3;H2,H1,H0;!$(N-C=O)]c1ccccc1"), 4.6),
+        ("Pyridine", Chem.MolFromSmarts("c1ccncc1"), 5.2),
+        ("Amide", Chem.MolFromSmarts("[CX3](=O)[NX3]"), -0.5), # Very weak base
+    ]
+
+    @property
+    def name(self) -> str:
+        return "estimate_pka_and_logd"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Estimates the pKa of the most acidic or basic group and calculates the "
+            "logD (distribution coefficient) at a specified pH. Use this to understand "
+            "how a molecule behaves in acidic (e.g., beverages) vs. neutral environments."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                "ph": {
+                    "type": "number", 
+                    "description": "The pH at which to calculate logD (default is 7.4).",
+                    "default": 7.4
+                }
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str, ph: float = 7.4) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+
+            # 1. Calculate base LogP
+            logp = float(Descriptors.MolLogP(mol))
+
+            # 2. Identify pKa
+            # Find the strongest acid (lowest pKa) and strongest base (highest pKa)
+            acidic_found = []
+            for name, pattern, val in self._ACIDIC_GROUPS:
+                if mol.HasSubstructMatch(pattern):
+                    acidic_found.append({"group": name, "pka": val})
+            
+            basic_found = []
+            for name, pattern, val in self._BASIC_GROUPS:
+                if mol.HasSubstructMatch(pattern):
+                    basic_found.append({"group": name, "pka": val})
+
+            # Sort to find the most relevant pKa
+            # For acids, we care about the most acidic one (lowest pKa)
+            # For bases, we care about the most basic one (highest pKa)
+            strongest_acid = min(acidic_found, key=lambda x: x["pka"]) if acidic_found else None
+            strongest_base = max(basic_found, key=lambda x: x["pka"]) if basic_found else None
+
+            # 3. Determine dominant ionizable state and calculate LogD
+            # Henderson-Hasselbalch derived formulas
+            logd = logp
+            pka_used = None
+            mol_type = "Neutral"
+
+            if strongest_acid and strongest_base:
+                # Amphoteric (e.g. amino acids) - simplify to the more extreme one
+                # This is a rough approximation
+                if abs(ph - strongest_acid["pka"]) < abs(ph - strongest_base["pka"]):
+                    mol_type = "Acidic (Amphoteric)"
+                    pka_used = strongest_acid["pka"]
+                    logd = logp - math.log10(1 + 10**(ph - pka_used))
+                else:
+                    mol_type = "Basic (Amphoteric)"
+                    pka_used = strongest_base["pka"]
+                    logd = logp - math.log10(1 + 10**(pka_used - ph))
+            elif strongest_acid:
+                mol_type = "Acidic"
+                pka_used = strongest_acid["pka"]
+                # For acids: logD = logP - log10(1 + 10^(pH - pKa))
+                logd = logp - math.log10(1 + 10**(ph - pka_used))
+            elif strongest_base:
+                mol_type = "Basic"
+                pka_used = strongest_base["pka"]
+                # For bases: logD = logP - log10(1 + 10^(pKa - pH))
+                logd = logp - math.log10(1 + 10**(pka_used - ph))
+
+            return {
+                "smiles": smiles,
+                "ph": ph,
+                "logp_neutral": round(logp, 2),
+                "logd_at_ph": round(logd, 2),
+                "estimated_pka": round(pka_used, 2) if pka_used is not None else None,
+                "molecule_type": mol_type,
+                "ionizable_groups_found": {
+                    "acidic": [g["group"] for g in acidic_found],
+                    "basic": [g["group"] for g in basic_found]
+                },
+                "interpretation": (
+                    f"At pH {ph}, the molecule is estimated to have a distribution coefficient (logD) of {round(logd, 2)}. "
+                    f"A lower logD compared to logP indicates the molecule is partially ionized, making it more water-soluble."
+                ),
+                "status": "success"
+            }
+
+        except Exception as e:
+            return {"error": f"pKa/logD estimation failed: {str(e)}"}
+
 # Register all RDKit tools
 ToolRegistry.register(ResolveNameToSmilesTool())
 ToolRegistry.register(CalculateMolecularPropertiesTool())
@@ -1539,6 +1803,8 @@ ToolRegistry.register(EstimateVolatilityAndNoteTool())
 ToolRegistry.register(AuditChemicalCompatibilityTool())
 ToolRegistry.register(CalculateEmulsionPropertiesTool())
 ToolRegistry.register(CheckRegulatoryComplianceTool())
+ToolRegistry.register(CalculateHansenParametersTool())
+ToolRegistry.register(EstimatePkaAndLogDTool())
 
 # Legacy functions kept for backward compatibility if needed, 
 # but the agent should now use ToolRegistry.
@@ -1601,3 +1867,9 @@ def calculate_emulsion_properties(smiles: str) -> dict:
 
 def check_regulatory_compliance(molecule_names: List[str]) -> dict:
     return CheckRegulatoryComplianceTool().execute(molecule_names)
+
+def calculate_hansen_parameters(smiles: str) -> dict:
+    return CalculateHansenParametersTool().execute(smiles)
+
+def estimate_pka_and_logd(smiles: str, ph: float = 7.4) -> dict:
+    return EstimatePkaAndLogDTool().execute(smiles, ph)
