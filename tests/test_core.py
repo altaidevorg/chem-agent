@@ -40,3 +40,21 @@ def test_extract_thought_from_response(mock_agent):
 
     assert thought == "I should inspect the dataset first."
     assert visible == "Let me analyze the file."
+
+
+def test_extract_reasoning_from_vllm_message_field(mock_agent):
+    agent, _ = mock_agent
+    message = MagicMock(content=None, reasoning="Step 1: inspect dataset.", reasoning_content=None)
+
+    assert agent._extract_reasoning_from_message(message) == "Step 1: inspect dataset."
+
+
+def test_extract_reasoning_prefers_reasoning_content(mock_agent):
+    agent, _ = mock_agent
+    message = MagicMock(
+        content=None,
+        reasoning="fallback",
+        reasoning_content="primary reasoning",
+    )
+
+    assert agent._extract_reasoning_from_message(message) == "primary reasoning"

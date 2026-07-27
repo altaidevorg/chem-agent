@@ -56,6 +56,14 @@ class ChemistryAgent:
         except Exception as e:
             print(f"[Logger Error] Failed to write telemetry: {e}")
 
+    def _extract_reasoning_from_message(self, message) -> str:
+        """Reads reasoning from provider-specific message fields (vLLM, etc.)."""
+        for field in ("reasoning_content", "reasoning"):
+            value = getattr(message, field, None)
+            if value and str(value).strip():
+                return str(value).strip()
+        return ""
+
     def _extract_thought(self, content: str) -> str:
         """Extracts the model's chain-of-thought block from a response."""
         if not content:
@@ -82,11 +90,28 @@ class ChemistryAgent:
             before_think = parts[0].strip()
             if "</think>" in parts[1]:
                 after_think = parts[1].split("</think>", 1)[1].strip()
-                return f"{before_think}\n{after_think}".strip() if before_think else after_think
-            return before_think
-        if "</think>" in content:
-            return content.split("</think>", 1)[-1].strip()
-        return content.strip()
+                content = f"{before_think}\n{after_think}".strip() if before_think else after_think
+            else:
+                content = before_think
+        elif "</think>" in content:
+            content = content.split("</think>", 1)[-1].strip()
+        else:
+            content = content.strip()
+
+        # --- SAFETY VALVE: HALLUCINATION/LOOP DETECTION ---
+        # Detect and truncate abnormally long, repetitive strings (common in SMILES hallucinations)
+        words = content.split()
+        safe_content = []
+        for word in words:
+            # If a single word is suspicious (>200 chars and high repetitive pattern)
+            if len(word) > 200:
+                # Simple heuristic for SMILES loops: many numbers and capital letters in a tight loop
+                digit_count = sum(c.isdigit() for c in word)
+                if digit_count > len(word) * 0.3: # If >30% are digits, it's likely a ring-closure loop
+                    word = word[:100] + "... [TRUNCATED POTENTIAL HALLUCINATION LOOP] ..."
+            safe_content.append(word)
+        
+        return " ".join(safe_content)
 
     def _log_thought(self, iteration: int, thought: str):
         """Logs the agent's reasoning process (Chain of Thought) for observability."""
@@ -180,7 +205,13 @@ class ChemistryAgent:
             
             # Extract and log the thought process (Chain of Thought)
             content = response_message.content or ""
-            thought = self._extract_thought(content)
+            # First try provider-specific reasoning fields (vLLM: reasoning or reasoning_content)
+            thought = self._extract_reasoning_from_message(response_message)
+
+            # If not found, fall back to tag extraction from content (legacy chem-coder)
+            if not thought:
+                thought = self._extract_thought(content)
+            
             visible_content = self._strip_thought(content)
 
             if thought:

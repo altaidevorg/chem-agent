@@ -3,7 +3,7 @@ rdkit
 streamlit
 pypdf
 python-dotenv
-duckdb
+ddgs
 pandas
 scipy
 statsmodels

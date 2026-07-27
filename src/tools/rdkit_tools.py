@@ -1079,6 +1079,357 @@ class ResolveSmilesToNameTool(BaseTool):
         except Exception as e:
             return {"error": f"Could not resolve SMILES to name via PubChem. Error: {str(e)}"}
 
+class EstimateVolatilityAndNoteTool(BaseTool):
+    """
+    Estimates the boiling point and volatility classification (Top, Heart, Base note)
+    using a Joback-inspired Group Contribution Method.
+    """
+    # Simplified Joback constants for boiling point: Tb = 198.2 + sum(contribution)
+    # These are standard Joback parameters in Kelvin
+    _JOBACK_GROUPS = {
+        "-[CH3]": (Chem.MolFromSmarts("[CH3;X4]"), 23.58),
+        "-[CH2]-": (Chem.MolFromSmarts("[CH2;X4]"), 22.88),
+        ">CH-": (Chem.MolFromSmarts("[CH1;X4]"), 21.74),
+        ">C<": (Chem.MolFromSmarts("[CH0;X4]"), 18.25),
+        "=CH2": (Chem.MolFromSmarts("[CH2;X3]"), 26.88),
+        "=CH-": (Chem.MolFromSmarts("[CH1;X3]"), 24.96),
+        "=C<": (Chem.MolFromSmarts("[CH0;X3]"), 24.14),
+        "#CH": (Chem.MolFromSmarts("[CH1;X2]"), 9.20),
+        "#C-": (Chem.MolFromSmarts("[CH0;X2]"), 27.38),
+        "-OH (alcohol)": (Chem.MolFromSmarts("[OX2H1;!$(O-C=O)]"), 92.88),
+        "-O- (ether)": (Chem.MolFromSmarts("[OX2H0;!$(O-C=O)]"), 31.22),
+        ">C=O (ketone)": (Chem.MolFromSmarts("[CX3](=[OX1])[#6]"), 76.75),
+        "-CHO (aldehyde)": (Chem.MolFromSmarts("[CX3H1](=[OX1])"), 72.24),
+        "-COOH (acid)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"), 169.09),
+        "-COO- (ester)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0]"), 81.10),
+        "Benzene ring atom": (Chem.MolFromSmarts("[c]"), 3.84), # Simplified ring contribution
+    }
+
+    @property
+    def name(self) -> str:
+        return "estimate_volatility_and_note"
+
+    @property
+    def description(self) -> str:
+        return "Estimates the boiling point (C) and classifies the chemical as a Top, Heart, or Base note based on structural group contributions. Essential for flavor and fragrance formulation."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+
+            total_contribution = 0
+            found_groups = {}
+            
+            # Match each Joback group
+            # Note: This is a simplified greedy match. In professional implementations, 
+            # we would use a more rigorous atom-typing to avoid double-counting.
+            # Here we count matches but try to keep patterns distinct.
+            for group_name, (pattern, contribution) in self._JOBACK_GROUPS.items():
+                if pattern:
+                    matches = mol.GetSubstructMatches(pattern)
+                    count = len(matches)
+                    if count > 0:
+                        total_contribution += (count * contribution)
+                        found_groups[group_name] = count
+
+            # Joback Equation for Normal Boiling Point (K)
+            # Tb = 198.2 + Σ(ΔTb)
+            estimated_bp_k = 198.2 + total_contribution
+            estimated_bp_c = estimated_bp_k - 273.15
+            
+            # Classification logic based on Aromsa proposal
+            # Top Note: < 150-180C
+            # Heart Note: 180-260C
+            # Base Note: > 260C
+            if estimated_bp_c < 180:
+                note_type = "Top Note"
+                desc = "High volatility, first to be perceived, light and fresh."
+            elif estimated_bp_c < 260:
+                note_type = "Heart Note"
+                desc = "Medium volatility, the core character of the flavor."
+            else:
+                note_type = "Base Note"
+                desc = "Low volatility, provides depth and longevity to the formulation."
+
+            return {
+                "smiles": smiles,
+                "estimated_boiling_point_c": round(estimated_bp_c, 1),
+                "odor_note_classification": note_type,
+                "volatility_description": desc,
+                "detected_structural_groups": found_groups,
+                "method": "Simplified Joback Group Contribution",
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Volatility estimation failed: {str(e)}"}
+
+class AuditChemicalCompatibilityTool(BaseTool):
+    """
+    Scans a list of molecules for reactive functional groups and flags 
+    potential incompatibilities (e.g., Schiff base risk, acetal formation).
+    """
+    
+    # Define functional groups of interest for reactivity
+    _REACTIVITY_GROUPS = {
+        "Aldehyde": Chem.MolFromSmarts("[CX3H1](=[OX1])"),
+        "Primary Amine": Chem.MolFromSmarts("[NX3H2;!$(N-C=O)]"),
+        "Secondary Amine": Chem.MolFromSmarts("[NX3H1;!$(N-C=O)]"),
+        "Alcohol": Chem.MolFromSmarts("[OX2H1;!$(O-C=O)]"),
+        "Carboxylic Acid": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"),
+        "Terpene/Alkene": Chem.MolFromSmarts("[CX3]=[CX3]"), # Oxidation sensitivity
+        "Ester": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0][#6]"),
+    }
+
+    # Define interaction risks
+    _RISK_RULES = [
+        {
+            "id": "R1_SCHIFF_BASE",
+            "name": "Schiff Base Formation Risk",
+            "pair": ("Aldehyde", "Primary Amine"),
+            "severity": "High",
+            "consequence": "Formation of imines, leading to aroma loss and yellow/brown discoloration.",
+            "description": "Aldehydes react rapidly with primary amines."
+        },
+        {
+            "id": "R2_ACETAL",
+            "name": "Acetal Formation Risk",
+            "pair": ("Aldehyde", "Alcohol"),
+            "severity": "Medium",
+            "consequence": "Formation of acetals, which alters the odor profile (usually becoming more 'ether-like').",
+            "description": "Common in acidic beverage bases or high-alcohol flavor concentrates."
+        },
+        {
+            "id": "R3_ESTER_EXCHANGE",
+            "name": "Transesterification Risk",
+            "pair": ("Ester", "Alcohol"),
+            "severity": "Low-Medium",
+            "consequence": "Exchange of ester groups, slowly changing the flavor composition over time.",
+            "description": "Significant in long-term storage of concentrated flavors."
+        },
+        {
+            "id": "R4_OXIDATION",
+            "name": "Oxidation Sensitivity",
+            "individual_group": "Terpene/Alkene",
+            "severity": "Medium",
+            "consequence": "Formation of hydroperoxides and off-notes (rancid, terpenic).",
+            "description": "High concentration of unsaturated bonds requires antioxidant addition."
+        },
+        {
+            "id": "R5_ACID_BASE",
+            "name": "Acid-Base Salt/Gas Risk",
+            "pair": ("Carboxylic Acid", "Primary Amine"),
+            "severity": "Medium",
+            "consequence": "Formation of non-volatile salts, reducing aroma impact or causing precipitation.",
+            "description": "Organic acids can react with basic amines."
+        }
+    ]
+
+    @property
+    def name(self) -> str:
+        return "audit_chemical_compatibility"
+
+    @property
+    def description(self) -> str:
+        return "Analyzes a list of chemical compounds for potential reactive incompatibilities. Flags risks like color changes, aroma loss, or precipitation in mixtures."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles_list": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of SMILES strings representing the formulation components."
+                }
+            },
+            "required": ["smiles_list"]
+        }
+
+    def execute(self, smiles_list: List[str]) -> Dict[str, Any]:
+        try:
+            if not smiles_list or len(smiles_list) < 1:
+                return {"error": "Provide at least one SMILES string."}
+
+            # 1. Map functional groups for each molecule
+            molecule_metadata = []
+            for i, smiles in enumerate(smiles_list):
+                with rdBase.BlockLogs():
+                    mol = Chem.MolFromSmiles(smiles)
+                if mol is None:
+                    return {"error": f"Invalid SMILES at index {i}: {smiles}"}
+                
+                detected = set()
+                for group_name, pattern in self._REACTIVITY_GROUPS.items():
+                    if pattern and mol.HasSubstructMatch(pattern):
+                        detected.add(group_name)
+                
+                molecule_metadata.append({
+                    "index": i,
+                    "smiles": smiles,
+                    "groups": detected
+                })
+
+            # 2. Audit interactions
+            risks_found = []
+            
+            # Check individual risks (e.g., oxidation)
+            for meta in molecule_metadata:
+                for rule in self._RISK_RULES:
+                    if "individual_group" in rule:
+                        if rule["individual_group"] in meta["groups"]:
+                            risks_found.append({
+                                "rule_id": rule["id"],
+                                "rule_name": rule["name"],
+                                "severity": rule["severity"],
+                                "involved_components": [meta["smiles"]],
+                                "involved_indices": [meta["index"]],
+                                "consequence": rule["consequence"]
+                            })
+
+            # Check pairwise risks
+            from itertools import combinations
+            for m1, m2 in combinations(molecule_metadata, 2):
+                for rule in self._RISK_RULES:
+                    if "pair" in rule:
+                        gA, gB = rule["pair"]
+                        # Match can be A in m1 and B in m2, OR vice versa
+                        match = (gA in m1["groups"] and gB in m2["groups"]) or (gB in m1["groups"] and gA in m2["groups"])
+                        
+                        if match:
+                            risks_found.append({
+                                "rule_id": rule["id"],
+                                "rule_name": rule["name"],
+                                "severity": rule["severity"],
+                                "involved_components": [m1["smiles"], m2["smiles"]],
+                                "involved_indices": [m1["index"], m2["index"]],
+                                "consequence": rule["consequence"]
+                            })
+
+            return {
+                "total_components_audited": len(smiles_list),
+                "risks_detected": risks_found,
+                "status": "success",
+                "summary": f"Detected {len(risks_found)} potential stability risks in the formulation."
+            }
+        except Exception as e:
+            return {"error": f"Chemical audit failed: {str(e)}"}
+
+class CalculateEmulsionPropertiesTool(BaseTool):
+    """
+    Calculates hydrophilic-lipophilic balance (HLB) using Griffin's method
+    and partitions characteristics (LogP) to assess emulsion stability.
+    """
+    
+    # Hydrophilic groups for Griffin's method (simplified mass-based detection)
+    _HYDROPHILIC_PATTERNS = {
+        "Hydroxyl (-OH)": Chem.MolFromSmarts("[OX2H1]"),
+        "Carboxyl (-COOH)": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"),
+        "Ether (-O-)": Chem.MolFromSmarts("[OX2H0;!$(O-C=O)]"),
+        "Ester (-COO-)": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0][#6]"),
+        "Amine (-NH2/NH)": Chem.MolFromSmarts("[NX3;H2,H1;!$(N-C=O)]"),
+        "Amide (-CONH-)": Chem.MolFromSmarts("[CX3](=[OX1])[NX3H1]"),
+        "Ethylene Oxide (EO)": Chem.MolFromSmarts("COCC"), # PEG chain unit
+    }
+
+    @property
+    def name(self) -> str:
+        return "calculate_emulsion_properties"
+
+    @property
+    def description(self) -> str:
+        return "Calculates HLB (Griffin method) and LogP for a molecule to predict its behavior in oil-in-water or water-in-oil emulsions. Vital for beverage and food emulsion stability."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def _get_hydrophilic_mass(self, mol) -> float:
+        """Estimates the mass of the hydrophilic portion of the molecule."""
+        hydrophilic_atoms = set()
+        for name, pattern in self._HYDROPHILIC_PATTERNS.items():
+            matches = mol.GetSubstructMatches(pattern)
+            for match in matches:
+                for idx in match:
+                    hydrophilic_atoms.add(idx)
+        
+        # Calculate sum of atomic weights for these indices
+        total_h_mass = 0.0
+        for idx in hydrophilic_atoms:
+            atom = mol.GetAtomWithIdx(idx)
+            total_h_mass += atom.GetMass()
+            # Add implicit hydrogens' mass
+            total_h_mass += atom.GetTotalNumHs() * 1.008
+            
+        return total_h_mass
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+
+            # 1. Total Molecular Weight
+            total_mw = Descriptors.MolWt(mol)
+            
+            # 2. Hydrophilic Mass (Mh)
+            mh = self._get_hydrophilic_mass(mol)
+            
+            # 3. Griffin HLB = 20 * (Mh / M)
+            # Griffin's method scale is 0 to 20
+            hlb = 20.0 * (mh / total_mw) if total_mw > 0 else 0.0
+            
+            # 4. LogP (Hydrophobicity)
+            logp = round(Descriptors.MolLogP(mol), 2)
+            
+            # 5. Interpretation
+            if hlb < 6:
+                application = "Water-in-Oil (W/O) Emulsifier / Hydrophobic"
+                suitability = "Low solubility in water. Best for oil-based flavor concentrates."
+            elif hlb < 8:
+                application = "Wetting Agent"
+                suitability = "Moderate solubility. Good for dispersing powders in liquids."
+            elif hlb < 16:
+                application = "Oil-in-Water (O/W) Emulsifier"
+                suitability = "High water solubility. Ideal for beverage emulsions and clouding agents."
+            else:
+                application = "Solubilizer or Detergent"
+                suitability = "Very high water solubility. Used for creating transparent flavor solutions."
+
+            return {
+                "smiles": smiles,
+                "molecular_weight": round(total_mw, 2),
+                "hydrophilic_mass_estimate": round(mh, 2),
+                "hlb_value": round(hlb, 2),
+                "logp": logp,
+                "recommended_application": application,
+                "matrix_suitability": suitability,
+                "method": "Griffin's HLB Approximation",
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Emulsion property calculation failed: {str(e)}"}
+
 # Register all RDKit tools
 ToolRegistry.register(ResolveNameToSmilesTool())
 ToolRegistry.register(CalculateMolecularPropertiesTool())
@@ -1096,6 +1447,9 @@ ToolRegistry.register(ConvertSmilesToInchiTool())
 ToolRegistry.register(CountHeavyAtomsAndRingsTool())
 ToolRegistry.register(DetectFunctionalGroupsTool())
 ToolRegistry.register(ResolveSmilesToNameTool())
+ToolRegistry.register(EstimateVolatilityAndNoteTool())
+ToolRegistry.register(AuditChemicalCompatibilityTool())
+ToolRegistry.register(CalculateEmulsionPropertiesTool())
 
 # Legacy functions kept for backward compatibility if needed, 
 # but the agent should now use ToolRegistry.
@@ -1146,3 +1500,12 @@ def detect_functional_groups(smiles: str) -> dict:
 
 def resolve_smiles_to_name(smiles: str) -> dict:
     return ResolveSmilesToNameTool().execute(smiles)
+
+def estimate_volatility_and_note(smiles: str) -> dict:
+    return EstimateVolatilityAndNoteTool().execute(smiles)
+
+def audit_chemical_compatibility(smiles_list: List[str]) -> dict:
+    return AuditChemicalCompatibilityTool().execute(smiles_list)
+
+def calculate_emulsion_properties(smiles: str) -> dict:
+    return CalculateEmulsionPropertiesTool().execute(smiles)

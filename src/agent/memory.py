@@ -7,6 +7,29 @@ from typing import List, Dict, Any, Optional
 
 from src.config import SESSIONS_DIR, MAX_CONTEXT_TOKENS, COMPACTION_THRESHOLD
 
+
+def _serialize_tool_calls(tool_calls: List[Any]) -> List[Dict[str, Any]]:
+    """Converts SDK tool call objects into JSON-serializable dicts."""
+    serialized: List[Dict[str, Any]] = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            serialized.append(tc)
+            continue
+        if hasattr(tc, "model_dump"):
+            serialized.append(tc.model_dump())
+            continue
+        fn = getattr(tc, "function", None)
+        serialized.append({
+            "id": getattr(tc, "id", None),
+            "type": getattr(tc, "type", "function"),
+            "function": {
+                "name": getattr(fn, "name", None) if fn else None,
+                "arguments": getattr(fn, "arguments", None) if fn else None,
+            },
+        })
+    return serialized
+
+
 class AgentMemory:
     """
     Manages the agent's short-term and contextual memory.
@@ -199,7 +222,7 @@ class AgentMemory:
         """Adds a message to the conversation history."""
         message = {"role": role, "content": content}
         if tool_calls:
-            message["tool_calls"] = tool_calls
+            message["tool_calls"] = _serialize_tool_calls(tool_calls)
         self.messages.append(message)
         self.metadata["last_interaction"] = datetime.now().isoformat()
 

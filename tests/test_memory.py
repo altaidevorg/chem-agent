@@ -43,3 +43,37 @@ def test_save_to_file(tmp_path):
     with open(filepath, "r") as f:
         data = json.load(f)
         assert data["messages"][0]["content"] == "Test message"
+
+
+class _MockFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _MockToolCall:
+    def __init__(self, call_id, name, arguments):
+        self.id = call_id
+        self.type = "function"
+        self.function = _MockFunction(name, arguments)
+
+
+def test_save_to_file_with_native_tool_calls(tmp_path):
+    memory = AgentMemory(session_id="tool_call_save_test")
+    memory.add_message(
+        "assistant",
+        "",
+        tool_calls=[_MockToolCall("call_1", "inspect_dataset", '{"file_path": "data.csv"}')],
+    )
+    memory.add_tool_response("call_1", "inspect_dataset", '{"status": "success"}')
+
+    session_dir = tmp_path / "sessions"
+    session_dir.mkdir()
+
+    filepath = memory.save_to_file(folder=str(session_dir))
+    with open(filepath, "r") as f:
+        data = json.load(f)
+
+    tool_calls = data["messages"][0]["tool_calls"]
+    assert tool_calls[0]["id"] == "call_1"
+    assert tool_calls[0]["function"]["name"] == "inspect_dataset"
