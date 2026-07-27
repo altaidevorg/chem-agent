@@ -7,7 +7,7 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.tools.data_tools import InspectDatasetTool
-from src.tools.stats_tools import AnalyzeDatasetTool
+from src.tools.stats_tools import AnalyzeDatasetTool, PredictShelfLifeArrheniusTool
 from src.tools.schema_cache import SchemaCache
 
 
@@ -161,3 +161,37 @@ def test_correlation_without_cache_uses_live_schema():
 
     assert result["status"] == "success"
     assert result["n"] == 10000
+
+
+def test_predict_shelf_life_arrhenius():
+    tool = PredictShelfLifeArrheniusTool()
+    
+    # Mock data for 0th order degradation
+    # Temp 40C (313.15K): y = -2*t + 100
+    # Temp 50C (323.15K): y = -5*t + 100
+    stability_data = [
+        {"temperature": 40, "time": 0, "value": 100},
+        {"temperature": 40, "time": 5, "value": 90},
+        {"temperature": 40, "time": 10, "value": 80},
+        {"temperature": 50, "time": 0, "value": 100},
+        {"temperature": 50, "time": 2, "value": 90},
+        {"temperature": 50, "time": 4, "value": 80},
+    ]
+    
+    result = tool.execute(
+        stability_data=stability_data,
+        failure_threshold=70,
+        target_temperature=25
+    )
+    
+    assert result["status"] == "success"
+    assert result["reaction_order"] == 0
+    assert "predicted_shelf_life" in result["prediction"]
+    assert result["activation_energy_kj_mol"] > 0
+    assert len(result["temperature_fits"]) == 2
+    
+    # Check if target shelf life is longer than accelerated
+    # k_40 = 2, k_50 = 5. At 25C, k should be < 2.
+    # Shelf life at 40C = (100-70)/2 = 15 days
+    # Shelf life at 25C should be > 15 days
+    assert result["prediction"]["predicted_shelf_life"] > 15

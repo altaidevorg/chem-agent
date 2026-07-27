@@ -1387,5 +1387,186 @@ class AnalyzeDesignOfExperimentsTool(BaseTool):
             return {"error": f"DoE analysis failed: {str(e)}"}
 
 
+class PredictShelfLifeArrheniusTool(BaseTool):
+    """
+    Predicts product shelf life using Arrhenius kinetic modeling. 
+    Analyzes degradation data at multiple temperatures to extrapolate 
+    stability at a target storage temperature.
+    """
+
+    @property
+    def name(self) -> str:
+        return "predict_shelf_life_arrhenius"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Predicts product shelf life using Arrhenius kinetic modeling based on "
+            "accelerated stability data. Determines reaction order, activation energy (Ea), "
+            "and extrapolates stability to a target temperature (e.g., 25°C)."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "stability_data": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "List of observations with 'temperature' (Celsius), 'time' (days/hours), and 'value' (quality/concentration)."
+                },
+                "target_temperature": {
+                    "type": "number",
+                    "description": "The expected real-world storage temperature (default: 25°C).",
+                    "default": 25.0
+                },
+                "failure_threshold": {
+                    "type": "number",
+                    "description": "The value at which the product is considered failed (e.g., 90 for 10% degradation if start is 100)."
+                },
+                "time_unit": {
+                    "type": "string",
+                    "description": "Units of time (e.g., 'days', 'hours', 'weeks').",
+                    "default": "days"
+                }
+            },
+            "required": ["stability_data", "failure_threshold"]
+        }
+
+    def execute(
+        self, 
+        stability_data: List[Dict[str, Any]], 
+        failure_threshold: float,
+        target_temperature: float = 25.0,
+        time_unit: str = "days"
+    ) -> Dict[str, Any]:
+        try:
+            df = pd.DataFrame(stability_data)
+            
+            # 1. Validation
+            required = ["temperature", "time", "value"]
+            if not all(c in df.columns for c in required):
+                return {"error": f"Data must contain: {required}"}
+            
+            temps = df["temperature"].unique()
+            if len(temps) < 2:
+                return {"error": "Need at least 2 different temperatures for Arrhenius modeling."}
+
+            # 2. Determine Reaction Order and calculate k for each temp
+            # k_results = {temp: {"k": val, "r2": val, "order": 0/1}}
+            k_map = {}
+            R = 8.314  # Gas constant J/(mol*K)
+            
+            for t_celsius in temps:
+                sub_df = df[df["temperature"] == t_celsius].sort_values("time")
+                if len(sub_df) < 2:
+                    continue
+                
+                x = sub_df["time"].values
+                y = sub_df["value"].values
+                
+                # Fit 0th order: y = -kt + y0
+                slope0, intercept0, r0, _, _ = stats.linregress(x, y)
+                k0 = -slope0
+                r2_0 = r0**2
+                
+                # Fit 1st order: ln(y) = -kt + ln(y0)
+                # Ensure y > 0 for log
+                if all(y > 0):
+                    slope1, intercept1, r1, _, _ = stats.linregress(x, np.log(y))
+                    k1 = -slope1
+                    r2_1 = r1**2
+                else:
+                    r2_1 = -1
+                
+                # Pick better fit
+                if r2_1 > r2_0:
+                    k_map[t_celsius] = {"k": k1, "r2": r2_1, "order": 1, "intercept": intercept1}
+                else:
+                    k_map[t_celsius] = {"k": k0, "r2": r2_0, "order": 0, "intercept": intercept0}
+
+            if len(k_map) < 2:
+                return {"error": "Insufficient data points at each temperature to calculate rate constants."}
+
+            # 3. Arrhenius Plot: ln(k) vs 1/T (Kelvin)
+            arr_x = [] # 1/T
+            arr_y = [] # ln(k)
+            for t_c, data in k_map.items():
+                if data["k"] <= 0: continue # Skip if k is negative (increasing quality over time?)
+                arr_x.append(1.0 / (t_c + 273.15))
+                arr_y.append(np.log(data["k"]))
+            
+            if len(arr_x) < 2:
+                return {"error": "Degradation rates are non-positive or inconsistent. Cannot fit Arrhenius model."}
+
+            slope_arr, intercept_arr, r_arr, _, _ = stats.linregress(arr_x, arr_y)
+            
+            # ln(k) = -Ea/R * (1/T) + ln(A)
+            ea = -slope_arr * R
+            a_freq = np.exp(intercept_arr)
+            r2_arr = r_arr**2
+            
+            # 4. Predict k at target temperature
+            target_t_kelvin = target_temperature + 273.15
+            k_target = a_freq * np.exp(-ea / (R * target_t_kelvin))
+            
+            # 5. Calculate Shelf Life
+            # We assume the reaction order is the one that best fit the data overall
+            # (Simplification: take the most frequent order)
+            orders = [d["order"] for d in k_map.values()]
+            dominant_order = max(set(orders), key=orders.count)
+            
+            # Find initial value (y0) - average of intercepts across temps if 0th/1st
+            y0_candidates = []
+            for t_c, data in k_map.items():
+                if data["order"] == 0: y0_candidates.append(data["intercept"])
+                else: y0_candidates.append(np.exp(data["intercept"]))
+            y0 = np.mean(y0_candidates)
+
+            if dominant_order == 0:
+                # 0th: threshold = -k*t + y0  => t = (y0 - threshold) / k
+                shelf_life = (y0 - failure_threshold) / k_target
+            else:
+                # 1st: ln(threshold) = -k*t + ln(y0) => t = (ln(y0) - ln(threshold)) / k
+                shelf_life = (np.log(y0) - np.log(failure_threshold)) / k_target
+
+            # 6. Warnings
+            warnings = []
+            if r2_arr < 0.9:
+                warnings.append("Low Arrhenius correlation (R² < 0.9). Predictions may be unreliable.")
+            if ea < 40000 or ea > 130000:
+                warnings.append(f"Activation Energy ({round(ea/1000, 1)} kJ/mol) is outside typical food/flavor ranges (40-125 kJ/mol). Mechanism might have changed.")
+
+            return {
+                "status": "success",
+                "reaction_order": dominant_order,
+                "activation_energy_kj_mol": round(ea / 1000.0, 2),
+                "frequency_factor_a": f"{a_freq:.2e}",
+                "arrhenius_r2": round(r2_arr, 4),
+                "prediction": {
+                    "target_temperature_c": target_temperature,
+                    "estimated_rate_constant_k": round(k_target, 6),
+                    "predicted_shelf_life": round(shelf_life, 2),
+                    "unit": time_unit,
+                    "initial_value_est": round(y0, 2),
+                    "failure_threshold": failure_threshold
+                },
+                "temperature_fits": [
+                    {"temp_c": t, "k": round(d["k"], 6), "r2": round(d["r2"], 4), "order": d["order"]}
+                    for t, d in k_map.items()
+                ],
+                "warnings": warnings,
+                "summary": (
+                    f"Predicted shelf life of {round(shelf_life, 1)} {time_unit} at {target_temperature}°C. "
+                    f"Model fit R²={round(r2_arr, 3)} with Ea={round(ea/1000, 1)} kJ/mol."
+                )
+            }
+
+        except Exception as e:
+            return {"error": f"Shelf life prediction failed: {str(e)}"}
+
+
 ToolRegistry.register(AnalyzeDatasetTool())
 ToolRegistry.register(AnalyzeDesignOfExperimentsTool())
+ToolRegistry.register(PredictShelfLifeArrheniusTool())
