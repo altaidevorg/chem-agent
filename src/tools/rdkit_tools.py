@@ -1430,6 +1430,94 @@ class CalculateEmulsionPropertiesTool(BaseTool):
         except Exception as e:
             return {"error": f"Emulsion property calculation failed: {str(e)}"}
 
+class CheckRegulatoryComplianceTool(BaseTool):
+    """
+    Checks a list of chemicals against the local regulatory database 
+    (IFRA and EU 1334/2008) for restrictions or bans.
+    """
+
+    @property
+    def name(self) -> str:
+        return "check_regulatory_compliance"
+
+    @property
+    def description(self) -> str:
+        return "Checks formulation components against IFRA (Fragrance) and EU 1334/2008 (Food) regulations. Essential for legal safety audits before production."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "molecule_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of common names or chemical names to check."
+                }
+            },
+            "required": ["molecule_names"]
+        }
+
+    def execute(self, molecule_names: List[str]) -> Dict[str, Any]:
+        try:
+            import duckdb
+            db_path = "data/regulatory.db"
+            if not os.path.exists(db_path):
+                return {"error": "Regulatory database not found. Run initialize script first."}
+            
+            conn = duckdb.connect(db_path)
+            results = []
+            
+            for name in molecule_names:
+                # Search in IFRA
+                ifra_res = conn.execute(
+                    "SELECT * FROM ifra_standards WHERE substance_name ILIKE ?", 
+                    [f"%{name}%"]
+                ).df()
+                
+                # Search in EU
+                eu_res = conn.execute(
+                    "SELECT * FROM eu_flavorings WHERE substance_name ILIKE ?", 
+                    [f"%{name}%"]
+                ).df()
+                
+                mol_summary = {
+                    "molecule": name,
+                    "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED",
+                    "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED",
+                    "details": []
+                }
+                
+                if not ifra_res.empty:
+                    for _, row in ifra_res.iterrows():
+                        mol_summary["details"].append({
+                            "source": "IFRA",
+                            "status": row['status'],
+                            "limit": row['max_limit'],
+                            "type": row['restriction_type']
+                        })
+                
+                if not eu_res.empty:
+                    for _, row in eu_res.iterrows():
+                        mol_summary["details"].append({
+                            "source": "EU 1334/2008",
+                            "status": row['status'],
+                            "restrictions": row['restrictions']
+                        })
+                
+                results.append(mol_summary)
+            
+            conn.close()
+            
+            return {
+                "total_checked": len(molecule_names),
+                "compliance_report": results,
+                "status": "success",
+                "notice": "This is a preliminary screen. Final compliance must be verified against current official legal texts."
+            }
+        except Exception as e:
+            return {"error": f"Regulatory check failed: {str(e)}"}
+
 # Register all RDKit tools
 ToolRegistry.register(ResolveNameToSmilesTool())
 ToolRegistry.register(CalculateMolecularPropertiesTool())
@@ -1450,6 +1538,7 @@ ToolRegistry.register(ResolveSmilesToNameTool())
 ToolRegistry.register(EstimateVolatilityAndNoteTool())
 ToolRegistry.register(AuditChemicalCompatibilityTool())
 ToolRegistry.register(CalculateEmulsionPropertiesTool())
+ToolRegistry.register(CheckRegulatoryComplianceTool())
 
 # Legacy functions kept for backward compatibility if needed, 
 # but the agent should now use ToolRegistry.
@@ -1509,3 +1598,6 @@ def audit_chemical_compatibility(smiles_list: List[str]) -> dict:
 
 def calculate_emulsion_properties(smiles: str) -> dict:
     return CalculateEmulsionPropertiesTool().execute(smiles)
+
+def check_regulatory_compliance(molecule_names: List[str]) -> dict:
+    return CheckRegulatoryComplianceTool().execute(molecule_names)
