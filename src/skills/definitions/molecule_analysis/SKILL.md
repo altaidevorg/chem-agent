@@ -17,7 +17,7 @@ This skill allows you to perform deep structural analysis of molecules. It is es
 
 ## Guidelines
 
--   Always validate SMILES using `canonicalize_and_validate_smiles` if you are unsure of the input format.
+-   Always validate SMILES using `standardize_molecule` if you are unsure of the input format.
 -   When comparing two molecules, use `calculate_molecular_similarity` (Tanimoto).
 -   For complex structural queries, use `search_substructure` with SMARTS patterns.
 -   If you need to understand a SMARTS pattern, use `interpret_smarts_pattern`.

@@ -16,6 +16,7 @@ from rdkit.Chem import inchi
 from rdkit.Chem import rdFingerprintGenerator
 
 from src.tools.base import BaseTool, ToolRegistry
+from src.tools.structure_tools import StandardizeMoleculeTool
 
 
 # Redirect RDKit C++ warnings/errors to Python stream
@@ -792,48 +793,6 @@ class SidechainChecker:
                         seen[nbr.GetIdx()] = 1  
                         stack.append(nbr)
         return True
-
-class CanonicalizeAndValidateSmilesTool(BaseTool):
-    @property
-    def name(self) -> str:
-        return "canonicalize_and_validate_smiles"
-
-    @property
-    def description(self) -> str:
-        return "Validates whether a given string is a valid SMILES and converts it into its unique canonical form. Use this to clean up user inputs before storing or comparing molecules."
-
-    @property
-    def parameters(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "smiles": {"type": "string", "description": "The raw SMILES string to validate and canonicalize."}
-            },
-            "required": ["smiles"]
-        }
-
-    def execute(self, smiles: str) -> Dict[str, Any]:
-        """Validates and returns the canonical version of a SMILES string."""
-        try:
-            with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
-            
-            if mol is None:
-                return {
-                    "is_valid": False,
-                    "error": f"The provided string '{smiles}' is not a valid SMILES pattern.",
-                    "status": "fail"
-                }
-            
-            canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
-            return {
-                "is_valid": True,
-                "raw_smiles": smiles,
-                "canonical_smiles": canonical_smiles,
-                "status": "success"
-            }
-        except Exception as e:
-            return {"error": f"Validation failed due to a critical error: {str(e)}"}
 
 class GetMolecularFormulaAndChargeTool(BaseTool):
     @property
@@ -1793,7 +1752,6 @@ ToolRegistry.register(SearchAdvancedSubstructureTool())
 ToolRegistry.register(FindMaximumCommonSubstructureTool())
 ToolRegistry.register(InterpretSmartsTool())
 ToolRegistry.register(DeconstructCoreAndSidechainsTool())
-ToolRegistry.register(CanonicalizeAndValidateSmilesTool())
 ToolRegistry.register(GetMolecularFormulaAndChargeTool())
 ToolRegistry.register(ConvertSmilesToInchiTool())
 ToolRegistry.register(CountHeavyAtomsAndRingsTool())
@@ -1839,7 +1797,13 @@ def deconstruct_core_and_sidechains(smiles: str, core_smarts_or_smiles: str) -> 
     return DeconstructCoreAndSidechainsTool().execute(smiles, core_smarts_or_smiles)
 
 def canonicalize_and_validate_smiles(smiles: str) -> dict:
-    return CanonicalizeAndValidateSmilesTool().execute(smiles)
+    # Now maps to the more comprehensive StandardizeMoleculeTool
+    return StandardizeMoleculeTool().execute(
+        smiles=smiles, 
+        remove_salts=False, 
+        neutralize=False, 
+        canonicalize_tautomer=False
+    )
 
 def get_molecular_formula_and_charge(smiles: str) -> dict:
     return GetMolecularFormulaAndChargeTool().execute(smiles)
