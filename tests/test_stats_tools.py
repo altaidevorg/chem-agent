@@ -195,3 +195,17 @@ def test_predict_shelf_life_arrhenius():
     # Shelf life at 40C = (100-70)/2 = 15 days
     # Shelf life at 25C should be > 15 days
     assert result["prediction"]["predicted_shelf_life"] > 15
+
+def test_pca_analysis(inspected_dataset):
+    tool = AnalyzeDatasetTool()
+    result = tool.execute(
+        file_path=DATASET_PATH,
+        analysis_type="pca",
+        columns=["Energy Consumption (kWh)", "Defect Rate (%)", "Recycled Material (%)", "Production Output (Units)"]
+    )
+    
+    assert result["status"] == "success"
+    assert "explained_variance_ratio" in result["result"]
+    assert "loadings" in result["result"]
+    assert result["result"]["n_components"] == 4
+    assert len(result["top_contributors"]["PC1"]) > 0

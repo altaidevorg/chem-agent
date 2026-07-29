@@ -7,3 +7,5 @@ ddgs
 pandas
 scipy
 statsmodels
+duckdb
+scikit-learn

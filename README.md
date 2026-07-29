@@ -121,7 +121,7 @@ The agent features a persistent **AgentMemory** system that tracks:
 1.  **Conversation History**: Full dialogue history between the user and the agent.
 2.  **Entity Tracking**: A structured registry of all chemical entities discussed, including their SMILES strings and calculated properties.
 3.  **Context Injection**: At every turn, the agent's current "Chemical Context" is injected into the system prompt.
-4.  **Dynamic Compaction**: Automatically özetleme (summarization) of old history when reaching model context limits (e.g., 16k tokens).
+4.  **Dynamic Compaction**: Automatically summarization of old history when reaching model context limits (e.g., 16k tokens).
 5.  **Smart Tool Pruning**: Pruning of large tool outputs (e.g., 100-row datasets) after they have been processed by the LLM to maintain a lean context window.
 
 ---

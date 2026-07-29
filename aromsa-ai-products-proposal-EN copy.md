@@ -3,7 +3,7 @@
 **Two Complementary AI Products for a Flavor Manufacturer:
 (A) A Domain-Specialized Local Chemistry Model · (B) An Agent Platform for Factory Efficiency**
 
-Prepared by: [Company] · Target Customer: Aromsa Besin Aroma ve Katkı Maddeleri San. ve Tic. A.Ş. · Date: July 2026 · Status: Draft v1.0
+Prepared by: [Company] · Target Customer: Aromsa Food Flavors and Additives Industry and Trade Inc. · Date: July 2026 · Status: Draft v1.0
 
 ---
 
@@ -112,7 +112,7 @@ Stating these limits up front is what makes the rest of this document credible.
 In the flavor industry, the formula *is* the company. Sending formulations to a cloud AI service is an unacceptable risk profile for most manufacturers. The product's design philosophy follows from this:
 
 - **Zero data-exfiltration surface:** the model does not talk to the internet. Formulas, raw-material lists, customer briefs and pricing never leave the company network.
-- **Regulatory and trade-secret compliance:** personal data (KVKK/GDPR) and trade secrets remain fully under company control; no third-party data-processor agreements are needed.
+- **Regulatory and trade-secret compliance:** personal data (GDPR/Data Protection Law) and trade secrets remain fully under company control; no third-party data-processor agreements are needed.
 - **Predictable cost:** no per-token billing; under heavy laboratory use, the hardware-plus-license model is significantly more economical than cloud APIs.
 - **Compact is practical:** the 9B class makes serious chemistry capability possible on a single server — no data-center investment, unlike 100B+ models.
 

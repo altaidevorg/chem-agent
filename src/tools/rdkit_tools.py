@@ -15,6 +15,8 @@ from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors
 from rdkit.Chem import inchi
 from rdkit.Chem import rdFingerprintGenerator
 
+import numpy as np
+from src.config import KNOWLEDGE_DB_FILE
 from src.tools.base import BaseTool, ToolRegistry
 from src.tools.structure_tools import StandardizeMoleculeTool
 
@@ -118,6 +120,8 @@ class CalculateMolecularPropertiesTool(BaseTool):
             log_p_val = round(Descriptors.MolLogP(mol), 2)
             hbd_val = Descriptors.NumHDonors(mol)
             hba_val = Descriptors.NumHAcceptors(mol)
+            tpsa_val = round(Descriptors.TPSA(mol), 2)
+            rot_bonds = Descriptors.NumRotatableBonds(mol)
             
             return {
                 "smiles": smiles,
@@ -125,6 +129,8 @@ class CalculateMolecularPropertiesTool(BaseTool):
                 "log_p": log_p_val,
                 "h_bond_donors": hbd_val,
                 "h_bond_acceptors": hba_val,
+                "tpsa": tpsa_val,
+                "rotatable_bonds": rot_bonds,
                 "parsing_status": "Success"
             }
         except Exception as e:
@@ -833,6 +839,133 @@ class GetMolecularFormulaAndChargeTool(BaseTool):
         except Exception as e:
             return {"error": f"Failed to compute formula/charge: {str(e)}"}
 
+class CalculateAllDescriptorsTool(BaseTool):
+    """
+    Calculates 200+ physicochemical descriptors for a molecule using RDKit.
+    Returns a comprehensive dictionary of all available descriptors.
+    """
+
+    @property
+    def name(self) -> str:
+        return "calculate_all_descriptors"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Calculates a comprehensive set of 200+ molecular descriptors using RDKit. "
+            "Use this for deep structural analysis or when building predictive models."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+
+            results = {}
+            for name, func in Descriptors._descList:
+                try:
+                    val = func(mol)
+                    # Round floats for cleanliness, keep ints as is
+                    if isinstance(val, float):
+                        results[name] = round(val, 4)
+                    else:
+                        results[name] = val
+                except:
+                    results[name] = None
+
+            return {
+                "smiles": smiles,
+                "descriptor_count": len(results),
+                "descriptors": results,
+                "status": "success"
+            }
+        except Exception as e:
+            return {"error": f"Failed to calculate all descriptors: {str(e)}"}
+
+class ExportMoleculeFileTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "export_molecule_file"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Converts a SMILES string into a standard .mol or .sdf file format and saves it inside the 'output/' directory. "
+            "These formats are compatible with external chemistry software like ChemDraw, PyMOL, or Discovery Studio. "
+            "Supports optional 3D coordinate generation."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule to export."},
+                "file_path": {"type": "string", "description": "The local path where the file should be created. Must end in .mol or .sdf (e.g., 'output/molecule.mol')."},
+                "generate_3d": {
+                    "type": "boolean", 
+                    "description": "If true, generates optimized 3D coordinates using the ETKDG method. Defaults to false (2D only).",
+                    "default": False
+                }
+            },
+            "required": ["smiles", "file_path"]
+        }
+
+    def execute(self, smiles: str, file_path: str, generate_3d: bool = False) -> Dict[str, Any]:
+        """Exports a SMILES string to a MOL or SDF file with coordinate generation."""
+        try:
+            parent_dir = os.path.dirname(file_path)
+            if parent_dir and not os.path.exists(parent_dir):
+                os.makedirs(parent_dir, exist_ok=True)
+                
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES format provided for export: {smiles}"}
+            
+            # Always add hydrogens for proper file export and 3D modeling
+            mol = Chem.AddHs(mol)
+            
+            if generate_3d:
+                # Use ETKDG (Experimental-Torsion Knowledge Distance Geometry) for 3D embedding
+                AllChem.EmbedMolecule(mol, AllChem.ETKDG())
+                AllChem.MMFFOptimizeMolecule(mol) # Quick force-field cleanup
+            else:
+                AllChem.Compute2DCoords(mol)
+            
+            _, ext = os.path.splitext(file_path.lower())
+            
+            if ext == '.mol':
+                Chem.MolToMolFile(mol, file_path)
+            elif ext == '.sdf':
+                with Chem.SDWriter(file_path) as writer:
+                    writer.write(mol)
+            else:
+                return {"error": f"Unsupported file extension '{ext}'. Please use .mol or .sdf"}
+            
+            return {
+                "smiles": smiles,
+                "file_path": file_path,
+                "format": ext[1:].upper(),
+                "coordinates": "3D (optimized)" if generate_3d else "2D",
+                "status": "success",
+                "message": f"Molecule successfully exported to {file_path} in {ext[1:].upper()} format."
+            }
+        except Exception as e:
+            return {"error": f"Failed to export molecule file: {str(e)}"}
+
 class ConvertSmilesToInchiTool(BaseTool):
     @property
     def name(self) -> str:
@@ -1139,63 +1272,42 @@ class EstimateVolatilityAndNoteTool(BaseTool):
 class AuditChemicalCompatibilityTool(BaseTool):
     """
     Scans a list of molecules for reactive functional groups and flags 
-    potential incompatibilities (e.g., Schiff base risk, acetal formation).
+    potential incompatibilities based on a unified knowledge database.
     """
-    
-    # Define functional groups of interest for reactivity
-    _REACTIVITY_GROUPS = {
-        "Aldehyde": Chem.MolFromSmarts("[CX3H1](=[OX1])"),
-        "Primary Amine": Chem.MolFromSmarts("[NX3H2;!$(N-C=O)]"),
-        "Secondary Amine": Chem.MolFromSmarts("[NX3H1;!$(N-C=O)]"),
-        "Alcohol": Chem.MolFromSmarts("[OX2H1;!$(O-C=O)]"),
-        "Carboxylic Acid": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"),
-        "Terpene/Alkene": Chem.MolFromSmarts("[CX3]=[CX3]"), # Oxidation sensitivity
-        "Ester": Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0][#6]"),
-    }
+    _MATRIX_CACHE = None
 
-    # Define interaction risks
-    _RISK_RULES = [
-        {
-            "id": "R1_SCHIFF_BASE",
-            "name": "Schiff Base Formation Risk",
-            "pair": ("Aldehyde", "Primary Amine"),
-            "severity": "High",
-            "consequence": "Formation of imines, leading to aroma loss and yellow/brown discoloration.",
-            "description": "Aldehydes react rapidly with primary amines."
-        },
-        {
-            "id": "R2_ACETAL",
-            "name": "Acetal Formation Risk",
-            "pair": ("Aldehyde", "Alcohol"),
-            "severity": "Medium",
-            "consequence": "Formation of acetals, which alters the odor profile (usually becoming more 'ether-like').",
-            "description": "Common in acidic beverage bases or high-alcohol flavor concentrates."
-        },
-        {
-            "id": "R3_ESTER_EXCHANGE",
-            "name": "Transesterification Risk",
-            "pair": ("Ester", "Alcohol"),
-            "severity": "Low-Medium",
-            "consequence": "Exchange of ester groups, slowly changing the flavor composition over time.",
-            "description": "Significant in long-term storage of concentrated flavors."
-        },
-        {
-            "id": "R4_OXIDATION",
-            "name": "Oxidation Sensitivity",
-            "individual_group": "Terpene/Alkene",
-            "severity": "Medium",
-            "consequence": "Formation of hydroperoxides and off-notes (rancid, terpenic).",
-            "description": "High concentration of unsaturated bonds requires antioxidant addition."
-        },
-        {
-            "id": "R5_ACID_BASE",
-            "name": "Acid-Base Salt/Gas Risk",
-            "pair": ("Carboxylic Acid", "Primary Amine"),
-            "severity": "Medium",
-            "consequence": "Formation of non-volatile salts, reducing aroma impact or causing precipitation.",
-            "description": "Organic acids can react with basic amines."
-        }
-    ]
+    def _load_knowledge(self) -> Dict[str, Any]:
+        """Lazily loads the reactivity matrix from DuckDB."""
+        if self._MATRIX_CACHE is not None:
+            return self._MATRIX_CACHE
+        
+        try:
+            import duckdb
+            if os.path.exists(KNOWLEDGE_DB_FILE):
+                conn = duckdb.connect(KNOWLEDGE_DB_FILE)
+                
+                # 1. Load Groups
+                groups_df = conn.execute("SELECT group_name, smarts_pattern FROM reactivity_groups").df()
+                compiled_groups = {}
+                for _, row in groups_df.iterrows():
+                    pattern = Chem.MolFromSmarts(row['smarts_pattern'])
+                    if pattern:
+                        compiled_groups[row['group_name']] = pattern
+                
+                # 2. Load Rules
+                rules = conn.execute("SELECT * FROM reactivity_rules").df().to_dict('records')
+                
+                conn.close()
+                self._MATRIX_CACHE = {
+                    "groups": compiled_groups,
+                    "rules": rules
+                }
+                return self._MATRIX_CACHE
+        except Exception as e:
+            print(f"[Error] Failed to load reactivity knowledge from DB: {e}")
+        
+        self._MATRIX_CACHE = {"groups": {}, "rules": []}
+        return self._MATRIX_CACHE
 
     @property
     def name(self) -> str:
@@ -1203,7 +1315,10 @@ class AuditChemicalCompatibilityTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Analyzes a list of chemical compounds for potential reactive incompatibilities. Flags risks like color changes, aroma loss, or precipitation in mixtures."
+        return (
+            "Analyzes a list of chemical compounds for potential reactive incompatibilities using the knowledge database. "
+            "Flags risks like color changes, aroma loss, toxic gas release (e.g. HCN), or precipitation in mixtures."
+        )
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -1224,6 +1339,10 @@ class AuditChemicalCompatibilityTool(BaseTool):
             if not smiles_list or len(smiles_list) < 1:
                 return {"error": "Provide at least one SMILES string."}
 
+            knowledge = self._load_knowledge()
+            groups_registry = knowledge["groups"]
+            rules = knowledge["rules"]
+
             # 1. Map functional groups for each molecule
             molecule_metadata = []
             for i, smiles in enumerate(smiles_list):
@@ -1233,7 +1352,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
                     return {"error": f"Invalid SMILES at index {i}: {smiles}"}
                 
                 detected = set()
-                for group_name, pattern in self._REACTIVITY_GROUPS.items():
+                for group_name, pattern in groups_registry.items():
                     if pattern and mol.HasSubstructMatch(pattern):
                         detected.add(group_name)
                 
@@ -1245,45 +1364,46 @@ class AuditChemicalCompatibilityTool(BaseTool):
 
             # 2. Audit interactions
             risks_found = []
+            from itertools import combinations
             
-            # Check individual risks (e.g., oxidation)
             for meta in molecule_metadata:
-                for rule in self._RISK_RULES:
-                    if "individual_group" in rule:
-                        if rule["individual_group"] in meta["groups"]:
+                for rule in rules:
+                    # Individual group risk (where group_b is None/NaN)
+                    if rule.get("group_b") is None or (isinstance(rule.get("group_b"), float) and np.isnan(rule["group_b"])):
+                        if rule["group_a"] in meta["groups"]:
                             risks_found.append({
-                                "rule_id": rule["id"],
-                                "rule_name": rule["name"],
+                                "rule_id": rule["rule_id"],
+                                "rule_name": rule["rule_name"],
                                 "severity": rule["severity"],
                                 "involved_components": [meta["smiles"]],
                                 "involved_indices": [meta["index"]],
-                                "consequence": rule["consequence"]
+                                "consequence": rule["consequence"],
+                                "description": rule.get("description", "")
                             })
 
-            # Check pairwise risks
-            from itertools import combinations
-            for m1, m2 in combinations(molecule_metadata, 2):
-                for rule in self._RISK_RULES:
-                    if "pair" in rule:
-                        gA, gB = rule["pair"]
-                        # Match can be A in m1 and B in m2, OR vice versa
-                        match = (gA in m1["groups"] and gB in m2["groups"]) or (gB in m1["groups"] and gA in m2["groups"])
-                        
-                        if match:
-                            risks_found.append({
-                                "rule_id": rule["id"],
-                                "rule_name": rule["name"],
-                                "severity": rule["severity"],
-                                "involved_components": [m1["smiles"], m2["smiles"]],
-                                "involved_indices": [m1["index"], m2["index"]],
-                                "consequence": rule["consequence"]
-                            })
+            if len(molecule_metadata) >= 2:
+                for m1, m2 in combinations(molecule_metadata, 2):
+                    for rule in rules:
+                        gA = rule.get("group_a")
+                        gB = rule.get("group_b")
+                        if gA and gB and not (isinstance(gB, float) and np.isnan(gB)):
+                            match = (gA in m1["groups"] and gB in m2["groups"]) or (gB in m1["groups"] and gA in m2["groups"])
+                            if match:
+                                risks_found.append({
+                                    "rule_id": rule["rule_id"],
+                                    "rule_name": rule["rule_name"],
+                                    "severity": rule["severity"],
+                                    "involved_components": [m1["smiles"], m2["smiles"]],
+                                    "involved_indices": [m1["index"], m2["index"]],
+                                    "consequence": rule["consequence"],
+                                    "description": rule.get("description", "")
+                                })
 
             return {
                 "total_components_audited": len(smiles_list),
                 "risks_detected": risks_found,
                 "status": "success",
-                "summary": f"Detected {len(risks_found)} potential stability risks in the formulation."
+                "summary": f"Detected {len(risks_found)} potential stability/safety risks in the formulation."
             }
         except Exception as e:
             return {"error": f"Chemical audit failed: {str(e)}"}
@@ -1392,7 +1512,7 @@ class CalculateEmulsionPropertiesTool(BaseTool):
 
 class CheckRegulatoryComplianceTool(BaseTool):
     """
-    Checks a list of chemicals against the local regulatory database 
+    Checks a list of chemicals against the unified knowledge database 
     (IFRA and EU 1334/2008) for restrictions or bans.
     """
 
@@ -1402,56 +1522,65 @@ class CheckRegulatoryComplianceTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Checks formulation components against IFRA (Fragrance) and EU 1334/2008 (Food) regulations. Essential for legal safety audits before production."
+        return "Checks formulation components against IFRA (Fragrance) and EU 1334/2008 (Food) regulations using the knowledge database. Essential for legal safety audits."
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "molecule_names": {
+                "queries": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "A list of common names or chemical names to check."
+                    "description": "A list of common names, chemical names, or CAS numbers to check."
                 }
             },
-            "required": ["molecule_names"]
+            "required": ["queries"]
         }
 
-    def execute(self, molecule_names: List[str]) -> Dict[str, Any]:
+    def execute(self, queries: List[str]) -> Dict[str, Any]:
+        """Checks a list of names or CAS numbers against regulatory data in the knowledge DB."""
         try:
             import duckdb
-            db_path = "data/regulatory.db"
-            if not os.path.exists(db_path):
-                return {"error": "Regulatory database not found. Run initialize script first."}
+            if not os.path.exists(KNOWLEDGE_DB_FILE):
+                return {"error": "Knowledge database not found. Run initialize script first."}
             
-            conn = duckdb.connect(db_path)
+            conn = duckdb.connect(KNOWLEDGE_DB_FILE)
             results = []
             
-            for name in molecule_names:
-                # Search in IFRA
-                ifra_res = conn.execute(
-                    "SELECT * FROM ifra_standards WHERE substance_name ILIKE ?", 
-                    [f"%{name}%"]
-                ).df()
+            for query in queries:
+                is_cas = "-" in query and any(char.isdigit() for char in query)
                 
-                # Search in EU
-                eu_res = conn.execute(
-                    "SELECT * FROM eu_flavorings WHERE substance_name ILIKE ?", 
-                    [f"%{name}%"]
-                ).df()
+                if is_cas:
+                    ifra_res = conn.execute(
+                        "SELECT * FROM ifra_standards WHERE cas_no = ?", [query]
+                    ).df()
+                    eu_res = conn.execute(
+                        "SELECT * FROM eu_flavorings WHERE cas_no = ?", [query]
+                    ).df()
+                else:
+                    ifra_res = conn.execute(
+                        "SELECT * FROM ifra_standards WHERE substance_name ILIKE ?", 
+                        [f"%{query}%"]
+                    ).df()
+                    eu_res = conn.execute(
+                        "SELECT * FROM eu_flavorings WHERE substance_name ILIKE ?", 
+                        [f"%{query}%"]
+                    ).df()
                 
                 mol_summary = {
-                    "molecule": name,
-                    "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED",
-                    "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED",
+                    "query": query,
+                    "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED/BANNED",
+                    "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED/BANNED",
                     "details": []
                 }
                 
                 if not ifra_res.empty:
                     for _, row in ifra_res.iterrows():
                         mol_summary["details"].append({
-                            "source": "IFRA",
+                            "source": "IFRA 51st Amendment",
+                            "substance": row['substance_name'],
+                            "cas": row['cas_no'],
                             "status": row['status'],
                             "limit": row['max_limit'],
                             "type": row['restriction_type']
@@ -1461,6 +1590,8 @@ class CheckRegulatoryComplianceTool(BaseTool):
                     for _, row in eu_res.iterrows():
                         mol_summary["details"].append({
                             "source": "EU 1334/2008",
+                            "substance": row['substance_name'],
+                            "cas": row['cas_no'],
                             "status": row['status'],
                             "restrictions": row['restrictions']
                         })
@@ -1470,7 +1601,7 @@ class CheckRegulatoryComplianceTool(BaseTool):
             conn.close()
             
             return {
-                "total_checked": len(molecule_names),
+                "total_checked": len(queries),
                 "compliance_report": results,
                 "status": "success",
                 "notice": "This is a preliminary screen. Final compliance must be verified against current official legal texts."
@@ -1763,8 +1894,10 @@ ToolRegistry.register(CalculateEmulsionPropertiesTool())
 ToolRegistry.register(CheckRegulatoryComplianceTool())
 ToolRegistry.register(CalculateHansenParametersTool())
 ToolRegistry.register(EstimatePkaAndLogDTool())
+ToolRegistry.register(CalculateAllDescriptorsTool())
+ToolRegistry.register(ExportMoleculeFileTool())
 
-# Legacy functions kept for backward compatibility if needed, 
+# Legacy functions kept for backward compatibility
 # but the agent should now use ToolRegistry.
 def calculate_molecular_properties(smiles: str) -> dict:
     return CalculateMolecularPropertiesTool().execute(smiles)
@@ -1837,3 +1970,9 @@ def calculate_hansen_parameters(smiles: str) -> dict:
 
 def estimate_pka_and_logd(smiles: str, ph: float = 7.4) -> dict:
     return EstimatePkaAndLogDTool().execute(smiles, ph)
+
+def calculate_all_descriptors(smiles: str) -> dict:
+    return CalculateAllDescriptorsTool().execute(smiles)
+
+def export_molecule_file(smiles: str, file_path: str, generate_3d: bool = False) -> dict:
+    return ExportMoleculeFileTool().execute(smiles, file_path, generate_3d)

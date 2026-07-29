@@ -10,6 +10,8 @@ import numpy as np
 from scipy import stats, optimize
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 from src.tools.base import BaseTool, ToolRegistry
 from src.tools.schema_cache import SchemaCache, sql_column_reference
@@ -115,7 +117,7 @@ class AnalyzeDatasetTool(BaseTool):
                 },
                 "analysis_type": {
                     "type": "string",
-                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition"],
+                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca"],
                     "description": "Type of statistical analysis to perform.",
                 },
                 "columns": {
@@ -1145,6 +1147,74 @@ class AnalyzeDatasetTool(BaseTool):
         except Exception as e:
             return {"error": f"Seasonal decomposition failed: {str(e)}"}
 
+    def _run_pca(
+        self,
+        file_path: str,
+        columns: List[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        df = self._load_dataframe(file_path, where_body)
+        
+        # Auto-select numeric columns if none provided
+        if not columns:
+            columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            if not columns:
+                return {"error": "No numeric columns found for PCA."}
+
+        validation_error = _validate_requested_columns(file_path, columns)
+        if validation_error:
+            return validation_error
+
+        # Drop rows with NaNs in the selected columns
+        df_clean = df[columns].dropna()
+        if len(df_clean) < 3:
+            return {"error": "Need at least 3 valid numeric records for PCA."}
+
+        # Standardize the data
+        scaler = StandardScaler()
+        x_scaled = scaler.fit_transform(df_clean)
+
+        # Run PCA
+        n_components = min(len(columns), 5) # Cap at 5 for summary
+        pca = PCA(n_components=n_components)
+        pca_result = pca.fit_transform(x_scaled)
+
+        # Explained variance
+        explained_variance = pca.explained_variance_ratio_.tolist()
+        cumulative_variance = np.cumsum(explained_variance).tolist()
+
+        # Loadings (how each original variable contributes to each PC)
+        loadings = pd.DataFrame(
+            pca.components_.T, 
+            columns=[f"PC{i+1}" for i in range(n_components)], 
+            index=columns
+        )
+
+        # Summary of results
+        results = {
+            "explained_variance_ratio": [round(float(v), 4) for v in explained_variance],
+            "cumulative_variance_ratio": [round(float(v), 4) for v in cumulative_variance],
+            "loadings": loadings.round(4).to_dict(),
+            "n_samples": len(df_clean),
+            "n_components": n_components
+        }
+
+        # Top factors for first two PCs
+        top_pc1 = loadings["PC1"].abs().sort_values(ascending=False).head(3).index.tolist()
+        top_pc2 = loadings["PC2"].abs().sort_values(ascending=False).head(3).index.tolist() if n_components > 1 else []
+
+        return {
+            "analysis_type": "pca",
+            "columns_analyzed": columns,
+            "result": results,
+            "top_contributors": {
+                "PC1": top_pc1,
+                "PC2": top_pc2
+            },
+            "status": "success",
+            "message": f"PCA completed. First 2 components explain {round(cumulative_variance[min(1, n_components-1)]*100, 1)}% of variance."
+        }
+
     def execute(
         self,
         file_path: str,
@@ -1232,10 +1302,14 @@ class AnalyzeDatasetTool(BaseTool):
                 res = self._run_seasonal_decomposition(
                     file_path, columns, timestamp_column, period, where_body
                 )
+            elif analysis_type == "pca":
+                res = self._run_pca(
+                    file_path, columns, where_body
+                )
             else:
                 res = {
                     "error": f"Unsupported analysis_type: {analysis_type}",
-                    "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition"],
+                    "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca"],
                 }
 
             if "error" in res and "status" not in res:

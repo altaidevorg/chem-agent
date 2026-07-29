@@ -19,16 +19,21 @@ COMPACTION_THRESHOLD = float(os.getenv("COMPACTION_THRESHOLD", "0.85"))
 
 # Path Configuration
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
 SKILLS_DIR = os.path.join(BASE_DIR, "src", "skills", "definitions")
 SESSIONS_DIR = os.path.join(LOGS_DIR, "sessions")
 THOUGHT_LOGS_DIR = os.path.join(LOGS_DIR, "thoughts")
 
 # Ensure directories exist
-for directory in [LOGS_DIR, OUTPUT_DIR, REPORTS_DIR, SESSIONS_DIR, THOUGHT_LOGS_DIR]:
+for directory in [LOGS_DIR, DATA_DIR, OUTPUT_DIR, REPORTS_DIR, SESSIONS_DIR, THOUGHT_LOGS_DIR, KNOWLEDGE_DIR]:
     os.makedirs(directory, exist_ok=True)
+
+# Knowledge Files
+KNOWLEDGE_DB_FILE = os.path.join(DATA_DIR, "chem_knowledge.db")
 
 # Logging Configuration
 TELEMETRY_LOG_FILE = os.path.join(LOGS_DIR, "agent_execution_logs.jsonl")

@@ -27,6 +27,7 @@ import src.tools.rdkit_tools
 import src.tools.file_tools
 import src.tools.data_tools
 import src.tools.stats_tools
+import src.tools.sensory_tools
 
 class ChemistryAgent:
     """

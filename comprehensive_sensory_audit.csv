@@ -1,0 +1,11 @@
+sample_id,panelist_id,sweetness,sourness,bitterness,salty,umami,astringency,metallic,floral,fruity,intensity
+PROT_1,P1,8,2,1,1,2,1,1,5,7,8
+PROT_1,P2,7,3,1,1,2,2,1,6,8,7
+PROT_2,P1,2,8,2,1,1,5,2,2,3,6
+PROT_2,P2,3,7,2,2,1,6,2,1,2,7
+PROT_3,P1,1,1,9,2,1,8,4,1,1,9
+PROT_3,P2,1,2,8,3,1,7,5,1,1,8
+PROT_4,P1,5,5,5,5,5,5,5,5,5,5
+PROT_4,P2,4,6,4,6,4,6,4,6,4,6
+PROT_5,P1,9,1,1,1,4,1,1,8,9,9
+PROT_5,P2,8,1,2,1,5,1,1,7,8,8
