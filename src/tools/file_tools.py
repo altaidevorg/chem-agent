@@ -93,7 +93,7 @@ class WriteFileTool(BaseTool):
             "required": ["file_path", "content"]
         }
 
-    def execute(self, file_path: str, content: str) -> Dict[str, Any]:
+    def execute(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
         """Writes or overwrites text content to a specified file path. Automatically creates parent directories."""
         try:
             parent_dir = os.path.dirname(file_path)
@@ -119,5 +119,5 @@ ToolRegistry.register(WriteFileTool())
 def read_file(file_path: str) -> dict:
     return ReadFileTool().execute(file_path)
 
-def write_file(file_path: str, content: str) -> dict:
-    return WriteFileTool().execute(file_path, content)
+def write_file(file_path: str, content: str, **kwargs) -> dict:
+    return WriteFileTool().execute(file_path, content, **kwargs)

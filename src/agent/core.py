@@ -28,6 +28,10 @@ import src.tools.file_tools
 import src.tools.data_tools
 import src.tools.stats_tools
 import src.tools.sensory_tools
+import src.tools.chem_math_tools
+import src.tools.gcms_tools
+import src.tools.structure_tools
+import src.tools.skill_tools
 
 class ChemistryAgent:
     """
@@ -156,8 +160,11 @@ class ChemistryAgent:
         if not tool:
             return {"error": f"Tool '{name}' not found in agent's toolset."}
         
+        start_time = datetime.now()
         try:
             result = tool.execute(**arguments)
+            end_time = datetime.now()
+            execution_time_ms = (end_time - start_time).total_seconds() * 1000
             
             # Update structured memory based on tool results
             if name == "resolve_name_to_smiles" and "smiles" in result:
@@ -165,6 +172,7 @@ class ChemistryAgent:
             elif name == "calculate_molecular_properties" and "smiles" in result:
                 self.memory.update_entity(name=None, smiles=result["smiles"], properties=result)
                 
+            result["_execution_time_ms"] = execution_time_ms
             return result
         except Exception as e:
             return {"error": f"Execution error in tool '{name}': {str(e)}"}
@@ -198,6 +206,7 @@ class ChemistryAgent:
 
             print(f"[Agent] (Turn {iteration}) Requesting completion...")
             
+            turn_start_time = datetime.now()
             try:
                 response = self.client.chat.completions.create(
                     model=self.model_name,
@@ -211,7 +220,17 @@ class ChemistryAgent:
                 self._write_telemetry("error", {"message": error_msg})
                 return error_msg
 
+            turn_end_time = datetime.now()
+            latency_ms = (turn_end_time - turn_start_time).total_seconds() * 1000
+
             response_message = response.choices[0].message
+            usage = getattr(response, "usage", None)
+            usage_data = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0)
+            } if usage else {}
+
             run_messages.append(response_message)
             
             # Extract and log the thought process (Chain of Thought)
@@ -234,6 +253,8 @@ class ChemistryAgent:
                 "thought": thought or None,
                 "visible_content": visible_content or None,
                 "tool_calls": bool(response_message.tool_calls),
+                "latency_ms": latency_ms,
+                "usage": usage_data
             }
 
             if response_message.tool_calls:
@@ -285,11 +306,67 @@ class ChemistryAgent:
                 if xml_matches:
                     for match in xml_matches:
                         try:
-                            parsed_call = json.loads(match.strip())
+                            # Cleanup literal newlines inside JSON strings (common model error)
+                            # This is a bit risky but helps with malformed fallback calls
+                            sanitized_match = match.strip()
+                            if '\n' in sanitized_match:
+                                # Replace literal newlines with escaped ones only if they are likely inside a string
+                                # Simple heuristic: if a newline is followed by something that isn't a key or brace
+                                pass 
+                            
+                            try:
+                                parsed_call = json.loads(sanitized_match)
+                            except json.JSONDecodeError:
+                                # Fallback: try to fix literal newlines in multi-line strings
+                                # Look for "content": "..." and escape newlines within it
+                                if '"content":' in sanitized_match:
+                                    # Very basic heuristic: find the content start and end
+                                    parts = sanitized_match.split('"content":', 1)
+                                    prefix = parts[0] + '"content":'
+                                    rest = parts[1].strip()
+                                    if rest.startswith('"'):
+                                        # It's a string. Find the closing quote and escape newlines in between.
+                                        # This is non-trivial with nested quotes.
+                                        # Let's try a simpler approach: just allow literal newlines in json.loads if possible?
+                                        # No, json.loads doesn't support that.
+                                        
+                                        # Attempt to use regex to find the key-value pairs if JSON fails
+                                        name_match = re.search(r'"name":\s*"(.*?)"', sanitized_match)
+                                        if name_match:
+                                            tool_name = name_match.group(1)
+                                            # If it's write_file, we can try to extract the content more aggressively
+                                            if tool_name == "write_file":
+                                                path_match = re.search(r'"file_path":\s*"(.*?)"', sanitized_match)
+                                                # Use regex to find everything after "content": " until the end of the string
+                                                content_match = re.search(r'"content":\s*"(.*)"', sanitized_match, re.DOTALL)
+                                                if path_match and content_match:
+                                                    tool_args = {
+                                                        "file_path": path_match.group(1),
+                                                        "content": content_match.group(1).replace('\\n', '\n') # Unescape if model did both
+                                                    }
+                                                    parsed_call = {"name": tool_name, "arguments": tool_args}
+                                                else:
+                                                    raise # Re-raise to let the outer catch handle it
+                                            else:
+                                                raise
+                                        else:
+                                            raise
+                                    else:
+                                        raise
+                                else:
+                                    raise
+
                             tool_name = parsed_call.get("name")
                             tool_args = parsed_call.get("arguments")
                             
                             if tool_name:
+                                # Pre-process arguments if it's a string that failed to parse
+                                if isinstance(tool_args, str):
+                                    try:
+                                        tool_args = json.loads(tool_args)
+                                    except:
+                                        pass
+                                
                                 result = self._execute_tool(tool_name, tool_args)
                                 self._write_telemetry("tool_execution", {
                                     "iteration": iteration,

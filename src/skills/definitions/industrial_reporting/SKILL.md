@@ -14,6 +14,11 @@ This skill is used to compile data from various sources (CSV logs, lab results, 
 3.  **Compilation**: Format the findings into a clear Markdown structure.
 4.  **Export**: Use `write_file` to save the report into the `reports/` or `output/` directory.
 
+## 🛑 MANDATORY EXECUTION PROTOCOL
+- **ON-DEMAND ONLY**: You are STRICTLY FORBIDDEN from proactively creating or saving report files in the `reports/` or `output/` directories.
+- **EXPLICIT CONSENT**: You MUST only call `write_file` to export a report if the user has explicitly asked to "save a report", "export a document", "create a file", or used similar phrasing.
+- **DEFAULT TO CHAT**: If no explicit export request is made, present your analysis directly in the chat interface using standard markdown formatting.
+
 ## Report Structure Template
 
 -   **Title**: Clear and descriptive.

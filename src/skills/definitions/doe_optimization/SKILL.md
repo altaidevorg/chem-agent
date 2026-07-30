@@ -1,3 +1,8 @@
+---
+name: doe_optimization
+description: Design and analyze experimental trials (DoE) to optimize formulations and processes using statistical modeling.
+---
+
 # Design of Experiments (DoE) & Optimization
 
 This skill enables the agent to assist R&D chemists in designing smarter experiments and optimizing formulations using statistical modeling and Response Surface Methodology (RSM).

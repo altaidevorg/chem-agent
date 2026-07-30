@@ -49,16 +49,40 @@ def init_db():
         ('93-15-2', 'Methyleugenol', 'Restricted', 'Depends on category', 'Active', 'IFRA'),
         ('91-64-5', 'Coumarin', 'Restricted', '2 mg/kg in beverages', 'Active', 'EU'),
         ('94-59-7', 'Safrole', 'Banned', 'Prohibited in food', 'Active', 'EU'),
-        ('89-82-7', 'Pulegone', 'Restricted', '20 mg/kg in beverages', 'Active', 'EU')
+        ('89-82-7', 'Pulegone', 'Restricted', '20 mg/kg in beverages', 'Active', 'EU'),
+        ('108-88-3', 'Toluene', 'Restricted', 'Prohibited in consumer adhesives/spray paints', 'Active', 'REACH'),
+        ('71-43-2', 'Benzene', 'Banned', '0.1% max in mixtures', 'Active', 'REACH'),
+        ('110-54-3', 'n-Hexane', 'Restricted', 'Occupational exposure limits apply', 'Active', 'REACH'),
+        ('67-56-1', 'Methanol', 'Restricted', '0.6% max in windscreen washers', 'Active', 'REACH')
     ]
     
     for item in critical_substances:
         if item[5] == 'IFRA':
             conn.execute("INSERT INTO ifra_standards (cas_no, substance_name, restriction_type, max_limit, status) VALUES (?, ?, ?, ?, ?)", 
                          (item[0], item[1], item[2], item[3], item[4]))
-        else:
+        elif item[5] == 'EU':
             conn.execute("INSERT INTO eu_flavorings (cas_no, substance_name, restrictions, status) VALUES (?, ?, ?, ?)", 
                          (item[0], item[1], item[2], item[4]))
+        elif item[5] == 'REACH':
+            # Insert into a general industrial table if we want, or just abuse ifra/eu for now.
+            # Better to add a general table.
+            pass
+
+    print("--- 1.3 General Industrial Restrictions (REACH) ---")
+    conn.execute("""
+    CREATE TABLE industrial_restrictions (
+        cas_no VARCHAR,
+        substance_name VARCHAR,
+        restriction_type VARCHAR,
+        max_limit VARCHAR,
+        status VARCHAR,
+        source VARCHAR DEFAULT 'EU REACH Annex XVII'
+    )
+    """)
+    for item in critical_substances:
+        if item[5] == 'REACH':
+            conn.execute("INSERT INTO industrial_restrictions (cas_no, substance_name, restriction_type, max_limit, status) VALUES (?, ?, ?, ?, ?)",
+                         (item[0], item[1], item[2], item[3], item[4]))
 
     print("--- 2. Initializing Reactivity Knowledge ---")
     # 2.1 Reactivity Groups (SMARTS)
@@ -103,6 +127,26 @@ def init_db():
         ("R7_PEROXIDE", "Explosion Risk", "Peroxide", None, "Extreme", "Violent decomposition", "Inherent instability")
     ]
     conn.executemany("INSERT INTO reactivity_rules VALUES (?, ?, ?, ?, ?, ?, ?)", rules)
+    
+    print("--- 3. Initializing Structural Restrictions ---")
+    conn.execute("""
+    CREATE TABLE structural_restrictions (
+        id INTEGER PRIMARY KEY,
+        class_name VARCHAR,
+        smarts_pattern VARCHAR,
+        regulation_source VARCHAR,
+        severity VARCHAR,
+        description TEXT
+    )
+    """)
+    
+    structural_data = [
+        (1, "Phthalates", "C(=O)(O[#6])c1ccccc1C(=O)O[#6]", "EU REACH / Annex XVII", "RESTRICTED", "Endocrine disruptors, restricted in toys and childcare articles."),
+        (2, "Parabens (Long-chain)", "Oc1ccc(cc1)C(=O)OCCC", "EU Cosmetics Reg", "RESTRICTED", "Butylparaben and derivatives, restricted due to endocrine concerns."),
+        (3, "Azo Dyes (Restricted Amine Precursors)", "Nc1ccc(cc1)-c2ccc(N)cc2", "EU REACH", "BANNED", "Benzidine-based dyes that can release carcinogenic amines."),
+        (4, "Organotin Compounds", "[Sn](-[#6])(-[#6])-[#6]", "EU REACH", "RESTRICTED", "Toxic to aquatic life and human health.")
+    ]
+    conn.executemany("INSERT INTO structural_restrictions VALUES (?, ?, ?, ?, ?, ?)", structural_data)
     
     print(f"Unified Chemical Knowledge Database initialized at {db_path}")
     conn.close()

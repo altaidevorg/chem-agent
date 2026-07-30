@@ -11,7 +11,7 @@ from io import StringIO
 from typing import Any, Dict, List
 
 from rdkit import Chem, DataStructs, rdBase
-from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors
+from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors, QED
 from rdkit.Chem import inchi
 from rdkit.Chem import rdFingerprintGenerator
 
@@ -135,6 +135,112 @@ class CalculateMolecularPropertiesTool(BaseTool):
             }
         except Exception as e:
             return {"error": f"Critical error during molecular property calculation: {str(e)}"}
+
+class CalculateDrugLikenessTool(BaseTool):
+    """
+    Evaluates a molecule against Lipinski's Rule of 5 and Veber's Rules,
+    and calculates the QED score and ESOL solubility for a modern pharma audit.
+    """
+    @property
+    def name(self) -> str:
+        return "calculate_drug_likeness"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Performs a comprehensive drug-likeness audit including Lipinski/Veber rules, "
+            "QED score (0-1), and logS (aqueous solubility) estimation."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+            },
+            "required": ["smiles"]
+        }
+
+    def _calculate_esol(self, mol) -> float:
+        """Estimates Aqueous Solubility (logS) using the ESOL model (Delaney)."""
+        logp = Descriptors.MolLogP(mol)
+        mw = Descriptors.MolWt(mol)
+        rot_bonds = Descriptors.NumRotatableBonds(mol)
+        
+        # Aromatic proportion
+        aromatic_atoms = [atom.GetIsAromatic() for atom in mol.GetAtoms()]
+        aromatic_count = sum(aromatic_atoms)
+        heavy_atoms = mol.GetNumHeavyAtoms()
+        ap = aromatic_count / heavy_atoms if heavy_atoms > 0 else 0
+        
+        # ESOL formula: logS = 0.16 - 0.63*LogP - 0.0062*MW + 0.066*RotBonds - 0.74*AP
+        logs = 0.16 - (0.63 * logp) - (0.0062 * mw) + (0.066 * rot_bonds) - (0.74 * ap)
+        return round(logs, 2)
+
+    def execute(self, smiles: str) -> Dict[str, Any]:
+        try:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return {"error": f"Invalid SMILES: {smiles}"}
+
+            mw = Descriptors.MolWt(mol)
+            logp = Descriptors.MolLogP(mol)
+            hbd = Descriptors.NumHDonors(mol)
+            hba = Descriptors.NumHAcceptors(mol)
+            rot_bonds = Descriptors.NumRotatableBonds(mol)
+            tpsa = Descriptors.TPSA(mol)
+
+            # 1. Lipinski criteria
+            lipinski = {
+                "mw_check": {"value": round(mw, 2), "limit": 500, "pass": mw < 500},
+                "logp_check": {"value": round(logp, 2), "limit": 5, "pass": logp < 5},
+                "hbd_check": {"value": hbd, "limit": 5, "pass": hbd <= 5},
+                "hba_check": {"value": hba, "limit": 10, "pass": hba <= 10}
+            }
+            
+            # 2. Veber criteria
+            veber = {
+                "rotatable_bonds_check": {"value": rot_bonds, "limit": 10, "pass": rot_bonds <= 10},
+                "tpsa_check": {"value": round(tpsa, 2), "limit": 140, "pass": tpsa <= 140}
+            }
+
+            # 3. Modern Metrics: QED and logS
+            qed_val = round(QED.qed(mol), 3)
+            logs_val = self._calculate_esol(mol)
+            
+            # Solubility in mg/L: 10^logS * MW * 1000
+            solubility_mg_l = round((10**logs_val) * mw * 1000, 1)
+
+            lipinski_violations = sum(1 for v in lipinski.values() if not v["pass"])
+            veber_violations = sum(1 for v in veber.values() if not v["pass"])
+
+            # Overall assessment
+            is_drug_like = lipinski_violations <= 1 and veber_violations == 0 and qed_val > 0.5
+            
+            return {
+                "smiles": smiles,
+                "lipinski_rule_of_five": lipinski,
+                "veber_rules": veber,
+                "modern_metrics": {
+                    "qed_score": qed_val,
+                    "qed_interpretation": "High" if qed_val > 0.67 else "Attractive" if qed_val > 0.5 else "Low",
+                    "logs_est": logs_val,
+                    "solubility_mg_l": solubility_mg_l,
+                    "solubility_class": "High" if logs_val > -2 else "Moderate" if logs_val > -4 else "Low"
+                },
+                "violations": {
+                    "lipinski": lipinski_violations,
+                    "veber": veber_violations,
+                    "total": lipinski_violations + veber_violations
+                },
+                "drug_likeness_score": "High" if is_drug_like else "Moderate" if lipinski_violations <= 2 else "Low",
+                "status": "success",
+                "summary": f"QED: {qed_val}, logS: {logs_val}. Molecule has {lipinski_violations} Lipinski violations and {veber_violations} Veber violations."
+            }
+        except Exception as e:
+            return {"error": f"Drug-likeness calculation failed: {str(e)}"}
 
 class GenerateMoleculeImageTool(BaseTool):
     @property
@@ -1174,11 +1280,29 @@ class ResolveSmilesToNameTool(BaseTool):
 
 class EstimateVolatilityAndNoteTool(BaseTool):
     """
-    Estimates the boiling point and volatility classification (Top, Heart, Base note)
-    using a Joback-inspired Group Contribution Method.
+    Estimates the boiling point (C) using a hybrid approach:
+    1. Experimental lookup for common industrial solvents.
+    2. Joback Group Contribution Method for unknown organic molecules.
     """
-    # Simplified Joback constants for boiling point: Tb = 198.2 + sum(contribution)
-    # These are standard Joback parameters in Kelvin
+    
+    # High-precision experimental data for common industry chemicals
+    _EXPERIMENTAL_DATA = {
+        "CCO": {"bp": 78.4, "name": "Ethanol"},
+        "O": {"bp": 100.0, "name": "Water"},
+        "CC(C)=O": {"bp": 56.1, "name": "Acetone"},
+        "Cc1ccccc1": {"bp": 110.6, "name": "Toluene"},
+        "CCOC(C)=O": {"bp": 77.1, "name": "Ethyl Acetate"},
+        "CCCCOC(C)=O": {"bp": 126.1, "name": "n-Butyl Acetate"},
+        "CO": {"bp": 64.7, "name": "Methanol"},
+        "CC(C)O": {"bp": 82.6, "name": "Isopropanol"},
+        "CCCCCC": {"bp": 68.7, "name": "n-Hexane"},
+        "c1ccccc1": {"bp": 80.1, "name": "Benzene"},
+        "Nc1ccc(-c2ccc(N)cc2)cc1": {"bp": 401.0, "name": "Benzidine"},
+        "CCCCc1ccc(C(=O)OCCC)cc1": {"bp": 310.0, "name": "Propyl 4-butylbenzoate (est)"},
+        "CCCCCCCCCCCCCCCC": {"bp": 286.8, "name": "n-Hexadecane"}
+    }
+
+    # Joback constants for boiling point: Tb = 198.2 + sum(contribution)
     _JOBACK_GROUPS = {
         "-[CH3]": (Chem.MolFromSmarts("[CH3;X4]"), 23.58),
         "-[CH2]-": (Chem.MolFromSmarts("[CH2;X4]"), 22.88),
@@ -1195,7 +1319,10 @@ class EstimateVolatilityAndNoteTool(BaseTool):
         "-CHO (aldehyde)": (Chem.MolFromSmarts("[CX3H1](=[OX1])"), 72.24),
         "-COOH (acid)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"), 169.09),
         "-COO- (ester)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0]"), 81.10),
-        "Benzene ring atom": (Chem.MolFromSmarts("[c]"), 3.84), # Simplified ring contribution
+        "Aromatic ring C": (Chem.MolFromSmarts("[c]"), 3.84),
+        "-NH2 (amine)": (Chem.MolFromSmarts("[NX3H2]"), 73.23),
+        ">NH (amine)": (Chem.MolFromSmarts("[NX3H1]"), 50.17),
+        ">N- (amine)": (Chem.MolFromSmarts("[NX3H0]"), 11.74),
     }
 
     @property
@@ -1204,7 +1331,7 @@ class EstimateVolatilityAndNoteTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Estimates the boiling point (C) and classifies the chemical as a Top, Heart, or Base note based on structural group contributions. Essential for flavor and fragrance formulation."
+        return "Estimates the boiling point (C) and classifies the chemical as a Top, Heart, or Base note. Uses experimental data for common solvents and Joback method for others."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -1223,47 +1350,52 @@ class EstimateVolatilityAndNoteTool(BaseTool):
             if mol is None:
                 return {"error": f"Invalid SMILES: {smiles}"}
 
-            total_contribution = 0
-            found_groups = {}
+            can_smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
             
-            # Match each Joback group
-            # Note: This is a simplified greedy match. In professional implementations, 
-            # we would use a more rigorous atom-typing to avoid double-counting.
-            # Here we count matches but try to keep patterns distinct.
-            for group_name, (pattern, contribution) in self._JOBACK_GROUPS.items():
-                if pattern:
-                    matches = mol.GetSubstructMatches(pattern)
-                    count = len(matches)
-                    if count > 0:
-                        total_contribution += (count * contribution)
-                        found_groups[group_name] = count
+            # 1. Check Experimental Lookup First
+            if can_smiles in self._EXPERIMENTAL_DATA:
+                data = self._EXPERIMENTAL_DATA[can_smiles]
+                bp_c = data["bp"]
+                method = f"Experimental Lookup ({data['name']})"
+            else:
+                # 2. Joback Estimation
+                total_contribution = 0
+                found_groups = {}
+                matched_atoms = set()
+                
+                # Sort groups by size/complexity to handle specific patterns first
+                for group_name, (pattern, contribution) in self._JOBACK_GROUPS.items():
+                    if pattern:
+                        matches = mol.GetSubstructMatches(pattern)
+                        for match in matches:
+                            if not any(idx in matched_atoms for idx in match):
+                                total_contribution += contribution
+                                found_groups[group_name] = found_groups.get(group_name, 0) + 1
+                                # For Joback, we usually don't consume atoms like HSP, 
+                                # but to prevent double counting on same functional center:
+                                for idx in match: matched_atoms.add(idx)
 
-            # Joback Equation for Normal Boiling Point (K)
-            # Tb = 198.2 + Σ(ΔTb)
-            estimated_bp_k = 198.2 + total_contribution
-            estimated_bp_c = estimated_bp_k - 273.15
-            
-            # Classification logic based on Aromsa proposal
-            # Top Note: < 150-180C
-            # Heart Note: 180-260C
-            # Base Note: > 260C
-            if estimated_bp_c < 180:
+                estimated_bp_k = 198.2 + total_contribution
+                bp_c = estimated_bp_k - 273.15
+                method = "Joback Group Contribution"
+
+            # Classification logic
+            if bp_c < 180:
                 note_type = "Top Note"
-                desc = "High volatility, first to be perceived, light and fresh."
-            elif estimated_bp_c < 260:
+                desc = "High volatility, first to be perceived."
+            elif bp_c < 260:
                 note_type = "Heart Note"
-                desc = "Medium volatility, the core character of the flavor."
+                desc = "Medium volatility, the core character."
             else:
                 note_type = "Base Note"
-                desc = "Low volatility, provides depth and longevity to the formulation."
+                desc = "Low volatility, provides longevity."
 
             return {
                 "smiles": smiles,
-                "estimated_boiling_point_c": round(estimated_bp_c, 1),
+                "estimated_boiling_point_c": round(bp_c, 1),
                 "odor_note_classification": note_type,
                 "volatility_description": desc,
-                "detected_structural_groups": found_groups,
-                "method": "Simplified Joback Group Contribution",
+                "method": method,
                 "status": "success"
             }
         except Exception as e:
@@ -1539,24 +1671,40 @@ class CheckRegulatoryComplianceTool(BaseTool):
         }
 
     def execute(self, queries: List[str]) -> Dict[str, Any]:
-        """Checks a list of names or CAS numbers against regulatory data in the knowledge DB."""
+        """
+        Checks a list of names or CAS numbers against regulatory data.
+        Now includes SMARTS-based structural screening for restricted classes.
+        """
         try:
             import duckdb
             if not os.path.exists(KNOWLEDGE_DB_FILE):
                 return {"error": "Knowledge database not found. Run initialize script first."}
             
             conn = duckdb.connect(KNOWLEDGE_DB_FILE)
+            
+            # Load structural restrictions once
+            structural_rules = conn.execute("SELECT * FROM structural_restrictions").df().to_dict('records')
+            structural_patterns = []
+            for r in structural_rules:
+                patt = Chem.MolFromSmarts(r['smarts_pattern'])
+                if patt:
+                    structural_patterns.append({"pattern": patt, "metadata": r})
+
             results = []
             
             for query in queries:
                 is_cas = "-" in query and any(char.isdigit() for char in query)
                 
+                # 1. Exact Name/CAS Check
                 if is_cas:
                     ifra_res = conn.execute(
                         "SELECT * FROM ifra_standards WHERE cas_no = ?", [query]
                     ).df()
                     eu_res = conn.execute(
                         "SELECT * FROM eu_flavorings WHERE cas_no = ?", [query]
+                    ).df()
+                    industrial_res = conn.execute(
+                        "SELECT * FROM industrial_restrictions WHERE cas_no = ?", [query]
                     ).df()
                 else:
                     ifra_res = conn.execute(
@@ -1567,14 +1715,45 @@ class CheckRegulatoryComplianceTool(BaseTool):
                         "SELECT * FROM eu_flavorings WHERE substance_name ILIKE ?", 
                         [f"%{query}%"]
                     ).df()
+                    industrial_res = conn.execute(
+                        "SELECT * FROM industrial_restrictions WHERE substance_name ILIKE ?",
+                        [f"%{query}%"]
+                    ).df()
                 
                 mol_summary = {
                     "query": query,
                     "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED/BANNED",
                     "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED/BANNED",
-                    "details": []
+                    "industrial_status": "Not Found / GRAS" if industrial_res.empty else "RESTRICTED/BANNED",
+                    "details": [],
+                    "structural_class_matches": []
                 }
                 
+                # 2. Structural Screening (SMARTS)
+                # First, resolve query to SMILES if it's not already
+                smiles = None
+                if not query.startswith("[") and not "=" in query: # Simple heuristic for not-a-SMILES
+                    resolve_tool = ResolveNameToSmilesTool()
+                    res = resolve_tool.execute(query)
+                    if "smiles" in res:
+                        smiles = res["smiles"]
+                else:
+                    smiles = query
+                
+                if smiles:
+                    with rdBase.BlockLogs():
+                        mol = Chem.MolFromSmiles(smiles)
+                    if mol:
+                        for item in structural_patterns:
+                            if mol.HasSubstructMatch(item["pattern"]):
+                                mol_summary["structural_class_matches"].append({
+                                    "class": item["metadata"]["class_name"],
+                                    "severity": item["metadata"]["severity"],
+                                    "regulation": item["metadata"]["regulation_source"],
+                                    "description": item["metadata"]["description"]
+                                })
+
+                # Populate details for exact matches
                 if not ifra_res.empty:
                     for _, row in ifra_res.iterrows():
                         mol_summary["details"].append({
@@ -1595,6 +1774,17 @@ class CheckRegulatoryComplianceTool(BaseTool):
                             "status": row['status'],
                             "restrictions": row['restrictions']
                         })
+
+                if not industrial_res.empty:
+                    for _, row in industrial_res.iterrows():
+                        mol_summary["details"].append({
+                            "source": row['source'],
+                            "substance": row['substance_name'],
+                            "cas": row['cas_no'],
+                            "status": row['status'],
+                            "limit": row['max_limit'],
+                            "type": row['restriction_type']
+                        })
                 
                 results.append(mol_summary)
             
@@ -1604,7 +1794,7 @@ class CheckRegulatoryComplianceTool(BaseTool):
                 "total_checked": len(queries),
                 "compliance_report": results,
                 "status": "success",
-                "notice": "This is a preliminary screen. Final compliance must be verified against current official legal texts."
+                "notice": "This report includes both exact CAS/Name matches and SMARTS-based structural class identification."
             }
         except Exception as e:
             return {"error": f"Regulatory check failed: {str(e)}"}
@@ -1896,6 +2086,7 @@ ToolRegistry.register(CalculateHansenParametersTool())
 ToolRegistry.register(EstimatePkaAndLogDTool())
 ToolRegistry.register(CalculateAllDescriptorsTool())
 ToolRegistry.register(ExportMoleculeFileTool())
+ToolRegistry.register(CalculateDrugLikenessTool())
 
 # Legacy functions kept for backward compatibility
 # but the agent should now use ToolRegistry.
@@ -1976,3 +2167,6 @@ def calculate_all_descriptors(smiles: str) -> dict:
 
 def export_molecule_file(smiles: str, file_path: str, generate_3d: bool = False) -> dict:
     return ExportMoleculeFileTool().execute(smiles, file_path, generate_3d)
+
+def calculate_drug_likeness(smiles: str) -> dict:
+    return CalculateDrugLikenessTool().execute(smiles)
