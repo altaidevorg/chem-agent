@@ -133,16 +133,19 @@ class QueryDatasetTool(BaseTool):
 
     def execute(self, sql_query: str, max_results: int = 50) -> Dict[str, Any]:
         """Executes a SQL query on files and returns results as dictionaries."""
+        # Safety Hard-Cap: Never allow more than 100 rows to context to prevent memory crashes
+        effective_max = min(max_results, 100)
+        
         try:
             with duckdb.connect(database=':memory:') as con:
                 res_df = con.execute(sql_query).df()
             total_found = len(res_df)
 
-            if total_found > max_results:
-                results = self._sanitize_results(res_df.head(max_results))
+            if total_found > effective_max:
+                results = self._sanitize_results(res_df.head(effective_max))
                 message = (
-                    f"Query returned {total_found} rows. Returning the first {max_results} rows. "
-                    "Consider refining your SQL query for more specific results."
+                    f"Query returned {total_found} rows. Returning the first {effective_max} rows "
+                    f"(hard-capped to protect memory). Consider refining your SQL query."
                 )
             else:
                 results = self._sanitize_results(res_df)
@@ -258,7 +261,71 @@ class ProfileDatasetHealthTool(BaseTool):
             return {"error": f"Failed to profile dataset: {str(e)}"}
 
 
+class SearchColumnsTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "search_columns"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Searches for a column name pattern across all registered datasets or a specific directory. "
+            "Use this to find which file contains the data you need (e.g., 'Temp_Sensor')."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "The substring to search for in column names (case-insensitive)."
+                },
+                "directory_path": {
+                    "type": "string",
+                    "description": "Optional directory to scan for datasets (CSV/JSONL). Defaults to 'data'."
+                }
+            },
+            "required": ["pattern"]
+        }
+
+    def execute(self, pattern: str, directory_path: str = "data") -> Dict[str, Any]:
+        """Searches for columns matching a pattern across files."""
+        pattern = pattern.lower()
+        matches = []
+        
+        # 1. Search in current data directory if it exists
+        if os.path.exists(directory_path):
+            for filename in os.listdir(directory_path):
+                if filename.endswith(('.csv', '.jsonl')):
+                    file_path = os.path.join(directory_path, filename)
+                    cols = SchemaCache.validate_columns(file_path, [])["available_columns"]
+                    if cols:
+                        matching_cols = [c for c in cols if pattern in c.lower()]
+                        if matching_cols:
+                            matches.append({
+                                "file": file_path,
+                                "matched_columns": matching_cols
+                            })
+
+        if not matches:
+            return {
+                "status": "success",
+                "message": f"No columns found matching '{pattern}'.",
+                "matches": []
+            }
+
+        return {
+            "status": "success",
+            "pattern": pattern,
+            "matches": matches,
+            "count": len(matches)
+        }
+
+
 # Register tools
 ToolRegistry.register(InspectDatasetTool())
 ToolRegistry.register(QueryDatasetTool())
 ToolRegistry.register(ProfileDatasetHealthTool())
+ToolRegistry.register(SearchColumnsTool())

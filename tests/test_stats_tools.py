@@ -209,3 +209,48 @@ def test_pca_analysis(inspected_dataset):
     assert "loadings" in result["result"]
     assert result["result"]["n_components"] == 4
     assert len(result["top_contributors"]["PC1"]) > 0
+
+def test_t_test_groups(inspected_dataset):
+    tool = AnalyzeDatasetTool()
+    # Compare "Defect Rate (%)" between two material categories
+    result = tool.execute(
+        file_path=DATASET_PATH,
+        analysis_type="t_test",
+        columns=["Defect Rate (%)"],
+        group_by="Material Category",
+        filters={"Material Category": ["Material_A", "Material_B"]}
+    )
+    
+    # Note: filters={"col": [val1, val2]} might not be supported by _filters_to_where.
+    # Let's check _filters_to_where in stats_tools.py. 
+    # It handles str, bool, None, and "else" (numeric). 
+    # It doesn't handle lists. I should use where_clause instead.
+    
+    result = tool.execute(
+        file_path=DATASET_PATH,
+        analysis_type="t_test",
+        columns=["Defect Rate (%)"],
+        group_by="Material Category",
+        where_clause="\"Material Category\" IN ('Raw Material', 'Hazardous Material')"
+    )
+    
+    assert result["status"] == "success"
+    assert result["analysis_type"] == "t_test"
+    assert "t_statistic" in result["result"]
+    assert "p_value" in result["result"]
+    assert result["group1"]["name"] in ["Raw Material", "Hazardous Material"]
+
+def test_chi_square_independence(inspected_dataset):
+    tool = AnalyzeDatasetTool()
+    # Test independence between Machine ID and Material Category
+    result = tool.execute(
+        file_path=DATASET_PATH,
+        analysis_type="chi_square",
+        columns=["Machine ID", "Material Category"]
+    )
+    
+    assert result["status"] == "success"
+    assert result["analysis_type"] == "chi_square"
+    assert "chi2_statistic" in result["result"]
+    assert "p_value" in result["result"]
+    assert result["result"]["degrees_of_freedom"] > 0

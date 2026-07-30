@@ -22,7 +22,8 @@ class CalculateDilutionTool(BaseTool):
         return (
             "Solves the dilution equation C1*V1 = C2*V2. Given any three parameters, "
             "it calculates the fourth. Can also convert between Molar (M) and mass-based (mg/L, %) "
-            "concentrations. Supports density (g/mL) for weight-to-volume conversions."
+            "concentrations. Supports density (g/mL) for weight-to-volume conversions. "
+            "Never perform dilution or concentration calculations mentally — always use this tool."
         )
 
     @property
@@ -178,7 +179,7 @@ class CalculateDensityConversionTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Converts between Mass, Volume, and Density using the formula Mass = Volume * Density."
+        return "Converts between Mass, Volume, and Density using the formula Mass = Volume * Density. Never calculate mass/volume/density conversions mentally — always use this tool."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -252,7 +253,7 @@ class CalculateMixtureCompositionTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Calculates total mass, volume, and final concentration of a mixture from multiple ingredients."
+        return "Calculates total mass, volume, and final concentration of a mixture from multiple ingredients. Never calculate mixture compositions mentally — always use this tool."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -339,7 +340,7 @@ class CalculateDosageTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Calculates the mass or volume of an ingredient required to reach a specific dosage in a batch."
+        return "Calculates the mass or volume of an ingredient required to reach a specific dosage in a batch. Never calculate production dosages mentally — always use this tool."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -391,7 +392,7 @@ class CalculateStoichiometryTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Converts between mass (g, mg), moles (mol, mmol), and molecular weight using n = m/MW."
+        return "Converts between mass (g, mg), moles (mol, mmol), and molecular weight using n = m/MW. Never perform stoichiometry or molar calculations mentally — always use this tool."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -494,7 +495,7 @@ class CalculateVocContentTool(BaseTool):
         return (
             "Calculates the total VOC content (g/L and %) of a mixture. "
             "Supports regional standards: 'EU' (BP <= 250°C), 'US_EPA' (BP <= 250°C with exemptions like Acetone), "
-            "and 'US_CARB' (BP <= 216°C)."
+            "and 'US_CARB' (BP <= 216°C). Never calculate VOC content or verify regional compliance mentally — always use this tool."
         )
 
     @property

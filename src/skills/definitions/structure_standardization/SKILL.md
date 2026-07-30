@@ -1,31 +1,40 @@
 ---
 name: structure_standardization
-description: Standardize chemical structures to ensure data consistency, remove salts, and find canonical tautomers.
+description: Standardize chemical structures from SMILES or local files (.mol, .sdf) to ensure consistency, remove salts, and find canonical tautomers.
 ---
 
-# Structure Standardization & Validation Skill
+# ⚗️ Structure Standardization & Validation Skill
 
 This skill ensures that chemical data is valid, consistent, clean, and ready for accurate calculation or database comparison.
 
-## Core Tool
-- `standardize_molecule`: Validates SMILES syntax and performs a sequence of cleaning operations (cleanup, salt stripping, neutralization, tautomer canonicalization).
+## Core Tools
+- `standardize_molecule`: Validates SMILES syntax and performs cleanup (salt stripping, neutralization, tautomer canonicalization).
+- `import_and_standardize_file`: Imports and cleans structures directly from local files (.mol, .sdf, .inchi).
 
 ## Workflow
 
-### 1. SMILES Validation & Cleaning
-- Use `standardize_molecule` whenever you receive a SMILES string from a user or external source.
-- It will return `is_valid: true` if the syntax is correct. If the SMILES is invalid, it will provide an error message.
-- For simple validation without changing the chemical structure, set `remove_salts=False`, `neutralize=False`, and `canonicalize_tautomer=False`.
+### 1. Chemical Import & Validation
+- **From SMILES**: Use `standardize_molecule` for any user-provided string.
+- **From FILES**: ALWAYS use `import_and_standardize_file`. Never attempt to use `read_file` on chemical structure files.
 
 ### 2. Parent Molecule Isolation (Salt Stripping)
-- If a user provides a salt form (e.g., "Sodium Benzoate"), use this skill to strip the sodium and get the "Benzoic Acid" parent.
-- **Why?** Physicochemical descriptors like logP, HSP, and pKa should generally be calculated on the neutral parent molecule, not the salt.
+- If a structure contains a salt form (e.g., Sodium Benzoate), the tools will strip the counterions to get the neutral parent.
+- **Why?** Physicochemical descriptors like logP, HSP, and pKa should generally be calculated on the neutral parent molecule.
 
 ### 3. Tautomer Standardization
-- Some molecules (like keto-enols) can be drawn in multiple ways. Use this skill to find the **canonical tautomer**.
-- This ensures that your analysis is always performed on the most stable or standard representation.
+- The tools automatically find the **canonical tautomer** (most stable/standard form).
 
-### 4. Preparation for Calculations
+### 4. Reporting
+Always compare the original state vs the standardized state and list the specific changes made (e.g., "Removed salts").
+
+## 📈 Example Actions
+- **File Import**: `import_and_standardize_file(file_path="data/messy_sample.mol")`
+- **Manual Cleanup**: `standardize_molecule(smiles="CC(=O)O.[Na]", remove_salts=True)`
+
+## ⚠️ Critical Rules
+- **No read_file for molecules**: `.mol` and `.sdf` are structured data. Do NOT use `read_file` or `query_dataset` on them.
+- **Always Canonical**: Use the `standardized_smiles` for all subsequent calculations.
+
 - Before performing **Stoichiometry** or **Dilution** calculations, ask if the user wants the calculation based on the salt form or the parent form. 
 - Use the `mw_difference` provided by the tool to adjust dosages if needed.
 

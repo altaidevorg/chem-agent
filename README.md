@@ -110,6 +110,7 @@ The agent is equipped with specialized "skills" that allow it to interact with c
         - `shift_analysis`: Performance comparison across Morning/Evening/Night shifts.
 
 ### System & File Operations
+- **`list_files`**: Lists all files in a directory, enabling discovery of datasets when paths are unknown.
 - **`read_file`**: Extracts text from `.txt`, `.md`, `.json`, and even `.pdf` documents.
 - **`write_file`**: Saves analytical reports or results to disk for later use.
 

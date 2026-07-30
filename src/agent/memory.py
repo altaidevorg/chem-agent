@@ -52,8 +52,10 @@ class AgentMemory:
         return len(self._tokenizer.encode(text))
 
     def get_total_tokens(self, system_prompt: str) -> int:
-        """Calculates the total tokens that would be sent to the LLM, including metadata and tool calls."""
-        total = self.count_tokens(system_prompt)
+        """ Calculates the total tokens, including messages and tool definitions overhead. """
+        # Estimating tool overhead: 25+ tools * ~120 tokens each ≈ 3000 tokens
+        tool_overhead = 3000
+        total = self.count_tokens(system_prompt) + tool_overhead
         for msg in self.messages:
             # Count content
             content = msg.get("content") or ""
@@ -88,9 +90,18 @@ class AgentMemory:
         if not self.messages:
             return
 
+        # Critical metadata tools that should not be pruned aggressively
+        metadata_tools = ["inspect_dataset", "list_files", "search_columns"]
+
         for i in range(len(self.messages)):
             msg = self.messages[i]
             if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and len(msg["content"]) > 500:
+                tool_name = msg.get("name")
+                
+                # Never prune metadata tools unless it's a danger case (force_last)
+                if tool_name in metadata_tools and not force_last:
+                    continue
+
                 # Normal case: prune if already processed by assistant
                 has_subsequent_assistant = False
                 for j in range(i + 1, len(self.messages)):

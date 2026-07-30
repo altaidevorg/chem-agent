@@ -103,7 +103,8 @@ class AnalyzeDatasetTool(BaseTool):
             "Performs deterministic statistical analysis on tabular datasets (CSV/JSONL). "
             "Use this for correlation, descriptive stats, ratio ranking, outliers, group comparisons, "
             "regression, process capability, pareto, trend projection, downsampling, correlation matrix, "
-            "and seasonal decomposition. Never calculate statistics mentally — always use this tool."
+            "seasonal decomposition, PCA, t-tests, and chi-square tests. "
+            "Never calculate statistics mentally — always use this tool."
         )
 
     @property
@@ -117,7 +118,7 @@ class AnalyzeDatasetTool(BaseTool):
                 },
                 "analysis_type": {
                     "type": "string",
-                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca"],
+                    "enum": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca", "t_test", "chi_square"],
                     "description": "Type of statistical analysis to perform.",
                 },
                 "columns": {
@@ -1072,9 +1073,11 @@ class AnalyzeDatasetTool(BaseTool):
         return {
             "analysis_type": "correlation_matrix",
             "columns_analyzed": list(numeric_df.columns),
-            "matrix": corr_matrix.to_dict(),
+            "matrix_sample": corr_matrix.iloc[:10, :10].to_dict(),
+            "matrix_dimensions": list(corr_matrix.shape),
             "top_relationships": summary[:5],
-            "status": "success"
+            "status": "success",
+            "message": f"Showing a 10x10 sample of the {corr_matrix.shape[0]}x{corr_matrix.shape[1]} correlation matrix."
         }
 
     def _run_seasonal_decomposition(
@@ -1191,12 +1194,16 @@ class AnalyzeDatasetTool(BaseTool):
         )
 
         # Summary of results
+        # Limit loadings to save context space (first 5 components, first 20 variables)
+        loadings_sample = loadings.iloc[:20, :5]
+        
         results = {
             "explained_variance_ratio": [round(float(v), 4) for v in explained_variance],
             "cumulative_variance_ratio": [round(float(v), 4) for v in cumulative_variance],
-            "loadings": loadings.round(4).to_dict(),
+            "loadings_sample": loadings_sample.round(4).to_dict(),
             "n_samples": len(df_clean),
-            "n_components": n_components
+            "n_components": n_components,
+            "total_variables": len(columns)
         }
 
         # Top factors for first two PCs
@@ -1214,6 +1221,115 @@ class AnalyzeDatasetTool(BaseTool):
             "status": "success",
             "message": f"PCA completed. First 2 components explain {round(cumulative_variance[min(1, n_components-1)]*100, 1)}% of variance."
         }
+
+    def _run_t_test(
+        self,
+        file_path: str,
+        columns: List[str],
+        group_by: Optional[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        df = self._load_dataframe(file_path, where_body)
+        
+        if group_by:
+            # Mode 1: One numeric column across two groups in group_by
+            if len(columns) != 1:
+                return {"error": "t_test with group_by requires exactly one numeric column in 'columns'."}
+            
+            validation_error = _validate_requested_columns(file_path, columns + [group_by])
+            if validation_error: return validation_error
+
+            numeric_col = columns[0]
+            groups = df[group_by].unique()
+            
+            if len(groups) != 2:
+                return {
+                    "error": f"t_test with group_by requires exactly two groups in the grouping column. Found {len(groups)}: {groups}",
+                    "hint": "Filter your dataset using where_clause or filters to isolate exactly two groups."
+                }
+            
+            g1_data = pd.to_numeric(df[df[group_by] == groups[0]][numeric_col], errors="coerce").dropna()
+            g2_data = pd.to_numeric(df[df[group_by] == groups[1]][numeric_col], errors="coerce").dropna()
+            
+            name1, name2 = str(groups[0]), str(groups[1])
+        else:
+            # Mode 2: Two different numeric columns
+            if len(columns) != 2:
+                return {"error": "t_test without group_by requires exactly two numeric columns in 'columns'."}
+            
+            validation_error = _validate_requested_columns(file_path, columns)
+            if validation_error: return validation_error
+            
+            g1_data = pd.to_numeric(df[columns[0]], errors="coerce").dropna()
+            g2_data = pd.to_numeric(df[columns[1]], errors="coerce").dropna()
+            
+            name1, name2 = columns[0], columns[1]
+
+        if len(g1_data) < 2 or len(g2_data) < 2:
+            return {"error": "Insufficient data in one or both groups for a t-test (need at least 2 points per group)."}
+
+        # Perform Independent Samples T-Test (Welch's t-test by default with equal_var=False)
+        t_stat, p_val = stats.ttest_ind(g1_data, g2_data, equal_var=False)
+        
+        mean1, mean2 = g1_data.mean(), g2_data.mean()
+        
+        return {
+            "analysis_type": "t_test",
+            "group1": {"name": name1, "n": len(g1_data), "mean": round(float(mean1), 4)},
+            "group2": {"name": name2, "n": len(g2_data), "mean": round(float(mean2), 4)},
+            "result": {
+                "t_statistic": round(float(t_stat), 4),
+                "p_value": round(float(p_val), 6),
+                "is_significant": bool(p_val < 0.05),
+                "confidence_level": "95%"
+            },
+            "status": "success",
+            "summary": f"t-test between {name1} and {name2}: p={round(float(p_val), 4)}. The difference is {'statistically significant' if p_val < 0.05 else 'not statistically significant'}."
+        }
+
+    def _run_chi_square(
+        self,
+        file_path: str,
+        columns: List[str],
+        where_body: str,
+    ) -> Dict[str, Any]:
+        if len(columns) != 2:
+            return {"error": "chi_square requires exactly two categorical columns in 'columns'."}
+        
+        validation_error = _validate_requested_columns(file_path, columns)
+        if validation_error: return validation_error
+        
+        df = self._load_dataframe(file_path, where_body)
+        df_clean = df[columns].dropna()
+        
+        if len(df_clean) < 5:
+            return {"error": "Insufficient data for chi-square test."}
+            
+        contingency_table = pd.crosstab(df_clean[columns[0]], df_clean[columns[1]])
+        
+        try:
+            chi2, p, dof, expected = stats.chi2_contingency(contingency_table)
+            
+            # Limit the size of the contingency table returned to context
+            table_sample = contingency_table.iloc[:10, :10]
+            
+            return {
+                "analysis_type": "chi_square",
+                "columns_analyzed": columns,
+                "contingency_table_sample": table_sample.to_dict(),
+                "table_dimensions": list(contingency_table.shape),
+                "result": {
+                    "chi2_statistic": round(float(chi2), 4),
+                    "p_value": round(float(p), 6),
+                    "degrees_of_freedom": int(dof),
+                    "is_significant": bool(p < 0.05)
+                },
+                "status": "success",
+                "message": f"Showing a 10x10 sample of the {contingency_table.shape[0]}x{contingency_table.shape[1]} contingency table.",
+                "summary": f"Chi-square test of independence between {columns[0]} and {columns[1]}: p={round(float(p), 4)}."
+            }
+        except Exception as e:
+            return {"error": f"Chi-square test failed: {str(e)}"}
 
     def execute(
         self,
@@ -1306,10 +1422,18 @@ class AnalyzeDatasetTool(BaseTool):
                 res = self._run_pca(
                     file_path, columns, where_body
                 )
+            elif analysis_type == "t_test":
+                res = self._run_t_test(
+                    file_path, columns, group_by, where_body
+                )
+            elif analysis_type == "chi_square":
+                res = self._run_chi_square(
+                    file_path, columns, where_body
+                )
             else:
                 res = {
                     "error": f"Unsupported analysis_type: {analysis_type}",
-                    "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca"],
+                    "supported_types": ["correlation", "describe", "ratio_rank", "outlier", "group_compare", "rolling_stats", "lag_analysis", "shift_analysis", "regression", "process_capability", "pareto", "trend_projection", "downsample", "correlation_matrix", "seasonal_decomposition", "pca", "t_test", "chi_square"],
                 }
 
             if "error" in res and "status" not in res:
@@ -1334,7 +1458,7 @@ class AnalyzeDesignOfExperimentsTool(BaseTool):
         return (
             "Analyzes Design of Experiments (DoE) data. Calculates main effects, "
             "performs ANOVA to test significance, and suggests optimal factor levels "
-            "to maximize/minimize the response."
+            "to maximize/minimize the response. Never perform DoE analysis or ANOVA mentally — always use this tool."
         )
 
     @property
@@ -1477,7 +1601,8 @@ class PredictShelfLifeArrheniusTool(BaseTool):
         return (
             "Predicts product shelf life using Arrhenius kinetic modeling based on "
             "accelerated stability data. Determines reaction order, activation energy (Ea), "
-            "and extrapolates stability to a target temperature (e.g., 25°C)."
+            "and extrapolates stability to a target temperature (e.g., 25°C). "
+            "Never calculate kinetic parameters or shelf life mentally — always use this tool."
         )
 
     @property
@@ -1644,3 +1769,315 @@ class PredictShelfLifeArrheniusTool(BaseTool):
 ToolRegistry.register(AnalyzeDatasetTool())
 ToolRegistry.register(AnalyzeDesignOfExperimentsTool())
 ToolRegistry.register(PredictShelfLifeArrheniusTool())
+
+
+class AnalyzeDeviationTool(BaseTool):
+    """
+    Performs root-cause analysis by comparing a failed batch against successful batches.
+    Joins quality, process, and ingredient data to identify anomalies.
+    """
+
+    @property
+    def name(self) -> str:
+        return "analyze_deviation"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Performs automated root-cause analysis for a failed production batch. "
+            "Compares the failed batch against successful 'PASS' batches of the same product. "
+            "Requires paths to quality, process, and ingredients datasets. "
+            "Never perform root-cause analysis mentally — always use this tool."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "failed_batch_id": {
+                    "type": "string",
+                    "description": "The ID of the batch that failed quality control.",
+                },
+                "quality_file": {
+                    "type": "string",
+                    "description": "Path to the batch quality dataset (must contain Batch_ID and Quality_Status).",
+                },
+                "process_file": {
+                    "type": "string",
+                    "description": "Path to the batch process dataset (must contain Batch_ID and sensor data).",
+                },
+                "ingredients_file": {
+                    "type": "string",
+                    "description": "Path to the batch ingredients dataset (must contain Batch_ID and Lot_Number).",
+                },
+                "target_metric": {
+                    "type": "string",
+                    "description": "The specific quality metric that deviated (e.g., 'Impurity_pct').",
+                },
+            },
+            "required": [
+                "failed_batch_id",
+                "quality_file",
+                "process_file",
+                "ingredients_file",
+            ],
+        }
+
+    def execute(
+        self,
+        failed_batch_id: str,
+        quality_file: str,
+        process_file: str,
+        ingredients_file: str,
+        target_metric: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            # 1. Load Data
+            with duckdb.connect(database=":memory:") as con:
+                quality_df = con.execute(f"SELECT * FROM '{quality_file}'").df()
+                process_df = con.execute(f"SELECT * FROM '{process_file}'").df()
+                ingredients_df = con.execute(f"SELECT * FROM '{ingredients_file}'").df()
+
+            # 2. Identify the product and failed batch
+            failed_row = quality_df[quality_df["Batch_ID"] == failed_batch_id]
+            if failed_row.empty:
+                return {"error": f"Batch ID {failed_batch_id} not found in quality file."}
+
+            product_name = failed_row["Product_Name"].iloc[0]
+            failed_metric_val = failed_row[target_metric].iloc[0] if target_metric else None
+
+            # 3. Get reference "PASS" batches for the same product
+            pass_batches = quality_df[
+                (quality_df["Product_Name"] == product_name)
+                & (quality_df["Quality_Status"].str.upper() == "PASS")
+            ]["Batch_ID"].tolist()
+
+            if not pass_batches:
+                return {
+                    "error": f"No successful reference batches found for product {product_name}."
+                }
+
+            # 4. Process Data Comparison (Numeric)
+            process_pass = process_df[process_df["Batch_ID"].isin(pass_batches)]
+            process_fail = process_df[process_df["Batch_ID"] == failed_batch_id]
+
+            numeric_cols = process_df.select_dtypes(include=[np.number]).columns.tolist()
+            if "Batch_ID" in numeric_cols:
+                numeric_cols.remove("Batch_ID")
+
+            process_anomalies = []
+            for col in numeric_cols:
+                avg_pass = process_pass[col].mean()
+                std_pass = process_pass[col].std()
+                val_fail = process_fail[col].iloc[0] if not process_fail.empty else None
+
+                if val_fail is not None and not pd.isna(avg_pass):
+                    delta = val_fail - avg_pass
+                    # Flag if more than 2 standard deviations away, or simple 10% if std is 0
+                    is_anomaly = (
+                        abs(delta) > (2 * std_pass)
+                        if (not pd.isna(std_pass) and std_pass > 0)
+                        else abs(delta / avg_pass) > 0.1
+                        if avg_pass != 0
+                        else False
+                    )
+
+                    if is_anomaly:
+                        process_anomalies.append(
+                            {
+                                "parameter": col,
+                                "failed_value": round(float(val_fail), 2),
+                                "average_pass": round(float(avg_pass), 2),
+                                "deviation": round(float(delta), 2),
+                                "severity": "High" if (not pd.isna(std_pass) and std_pass > 0 and abs(delta) > (3 * std_pass)) else "Medium",
+                            }
+                        )
+
+            # 5. Ingredient/Lot Comparison (Categorical)
+            ing_pass = ingredients_df[ingredients_df["Batch_ID"].isin(pass_batches)]
+            ing_fail = ingredients_df[ingredients_df["Batch_ID"] == failed_batch_id]
+
+            ingredient_anomalies = []
+            for _, row in ing_fail.iterrows():
+                ing_name = row["Ingredient_Name"]
+                fail_lot = row["Lot_Number"]
+
+                # Check if this lot was used in PASS batches
+                lot_usage_in_pass = ing_pass[
+                    (ing_pass["Ingredient_Name"] == ing_name)
+                    & (ing_pass["Lot_Number"] == fail_lot)
+                ]
+
+                if lot_usage_in_pass.empty:
+                    # New lot detected!
+                    # Check if there were OTHER lots used in PASS batches
+                    other_lots = ing_pass[ing_pass["Ingredient_Name"] == ing_name][
+                        "Lot_Number"
+                    ].unique()
+                    ingredient_anomalies.append(
+                        {
+                            "ingredient": ing_name,
+                            "failed_batch_lot": fail_lot,
+                            "pass_batch_lots": list(other_lots),
+                            "issue": "New Lot Detected",
+                            "severity": "Medium",
+                        }
+                    )
+
+            # 6. Conclusion Synthesis
+            hypotheses = []
+            for anom in process_anomalies:
+                hypotheses.append(
+                    f"Process Deviation: {anom['parameter']} was {anom['failed_value']} (Avg: {anom['average_pass']})"
+                )
+            for anom in ingredient_anomalies:
+                hypotheses.append(
+                    f"Material Change: New lot {anom['failed_batch_lot']} for {anom['ingredient']}"
+                )
+
+            return {
+                "status": "success",
+                "product": product_name,
+                "failed_batch": failed_batch_id,
+                "target_metric": target_metric,
+                "failed_value": round(float(failed_metric_val), 4) if failed_metric_val is not None else None,
+                "process_anomalies": process_anomalies,
+                "ingredient_anomalies": ingredient_anomalies,
+                "root_cause_hypotheses": hypotheses,
+                "reference_batches_count": len(pass_batches),
+                "summary": f"Analyzed {failed_batch_id}. Found {len(process_anomalies)} process anomalies and {len(ingredient_anomalies)} ingredient anomalies."
+            }
+
+        except Exception as e:
+            return {"error": f"Deviation analysis failed: {str(e)}"}
+
+
+ToolRegistry.register(AnalyzeDeviationTool())
+
+
+class AnalyzeSPCTool(BaseTool):
+    """
+    Performs Statistical Process Control (SPC) analysis using Individual-Moving Range (I-MR) charts.
+    Detects if a process is stable and identifies out-of-control points.
+    """
+
+    @property
+    def name(self) -> str:
+        return "analyze_spc"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Performs Statistical Process Control (SPC) using I-MR charts. "
+            "Calculates Control Limits (UCL, LCL) and detects trend violations. "
+            "Use this to monitor process stability over time. Never perform SPC mentally."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the production dataset (.csv or .jsonl).",
+                },
+                "target_column": {
+                    "type": "string",
+                    "description": "The numeric column to monitor (e.g., 'Viscosity_cP').",
+                },
+                "timestamp_column": {
+                    "type": "string",
+                    "description": "Column used for ordering the data chronologically.",
+                },
+            },
+            "required": ["file_path", "target_column"],
+        }
+
+    def execute(
+        self,
+        file_path: str,
+        target_column: str,
+        timestamp_column: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            # 1. Load and Sort Data
+            with duckdb.connect(database=":memory:") as con:
+                order_by = f'ORDER BY "{timestamp_column}"' if timestamp_column else ""
+                df = con.execute(f'SELECT * FROM "{file_path}" {order_by}').df()
+
+            data = pd.to_numeric(df[target_column], errors="coerce").dropna()
+            if len(data) < 5:
+                return {"error": "Need at least 5 data points for meaningful SPC analysis."}
+
+            # 2. I-MR Chart Calculations
+            # Individual Chart
+            mean_x = data.mean()
+            moving_ranges = np.abs(data.diff().dropna())
+            avg_mr = moving_ranges.mean()
+
+            # Constants for I-MR (Subgroup size 2)
+            # 3-Sigma limits: Mean +/- (3 * AvgMR / 1.128) -> Mean +/- 2.66 * AvgMR
+            sigma_est = avg_mr / 1.128
+            ucl_x = mean_x + (3 * sigma_est)
+            lcl_x = mean_x - (3 * sigma_est)
+
+            # Moving Range Limits
+            ucl_mr = 3.267 * avg_mr
+            lcl_mr = 0
+
+            # 3. Detect Violations (Nelson Rule 1: Beyond Limits)
+            violations = []
+            for i, val in enumerate(data):
+                status = "Stable"
+                if val > ucl_x:
+                    status = "Above UCL"
+                elif val < lcl_x:
+                    status = "Below LCL"
+
+                if status != "Stable":
+                    violations.append({
+                        "index": int(i),
+                        "batch_id": str(df.iloc[i].get("Batch_ID", "N/A")),
+                        "value": round(float(val), 2),
+                        "violation": status
+                    })
+
+            # 4. Detect Runs (Rule: 7 or more consecutive points on one side of the mean)
+            runs = []
+            current_run = []
+            last_side = None # 1 for above, -1 for below
+            
+            for i, val in enumerate(data):
+                side = 1 if val > mean_x else -1
+                if side == last_side:
+                    current_run.append(i)
+                else:
+                    if len(current_run) >= 7:
+                        runs.append({"indices": current_run, "type": "Run Detected"})
+                    current_run = [i]
+                    last_side = side
+
+            return {
+                "status": "success",
+                "metric": target_column,
+                "statistics": {
+                    "mean": round(float(mean_x), 4),
+                    "process_sigma": round(float(sigma_est), 4),
+                    "ucl": round(float(ucl_x), 4),
+                    "lcl": round(float(lcl_x), 4),
+                    "avg_moving_range": round(float(avg_mr), 4),
+                },
+                "control_status": "Out of Control" if violations or runs else "Stable",
+                "violations": violations,
+                "runs": runs,
+                "data_points_count": len(data),
+                "summary": f"Process is {('Out of Control' if violations or runs else 'Stable')}. Found {len(violations)} limit violations."
+            }
+
+        except Exception as e:
+            return {"error": f"SPC analysis failed: {str(e)}"}
+
+
+ToolRegistry.register(AnalyzeSPCTool())

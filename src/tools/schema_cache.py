@@ -163,19 +163,26 @@ class SchemaCache:
             context["did_you_mean_sql"] = sql_column_reference(did_you_mean)
 
         if available_columns:
-            context["available_columns"] = available_columns
-            context["sql_column_list"] = ", ".join(sql_column_reference(col) for col in available_columns)
+            # Limit hints to 20 columns to prevent context bloat
+            hint_cols = available_columns[:20]
+            context["available_columns_sample"] = hint_cols
+            context["sql_column_list_sample"] = ", ".join(sql_column_reference(col) for col in hint_cols)
+            if len(available_columns) > 20:
+                context["total_available_columns"] = len(available_columns)
 
         if cached_schemas:
-            context["cached_schemas"] = [
+            # Limit to 3 cached schemas to prevent context bloat
+            context["cached_schemas_sample"] = [
                 {
                     "file_path": schema["file_path"],
                     "total_rows": schema["total_rows"],
-                    "sql_column_list": schema["sql_column_list"],
+                    "sql_column_list_sample": ", ".join(sql_column_reference(col) for col in schema["column_names"][:10]),
                     "example_select": schema.get("example_select"),
                 }
-                for schema in cached_schemas
+                for schema in cached_schemas[:3]
             ]
+            if len(cached_schemas) > 3:
+                context["total_cached_schemas"] = len(cached_schemas)
         elif file_paths:
             context["hint"] = (
                 "No cached schema found for referenced files. Run inspect_dataset first, "

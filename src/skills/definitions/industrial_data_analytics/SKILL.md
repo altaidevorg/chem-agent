@@ -11,11 +11,12 @@ This skill enables the agent to perform sophisticated analysis on large-scale in
 
 ### 1. Schema & Health Discovery (Always Start Here)
 Never assume the column names, data types, or data quality of a dataset. 
-- **Schema Discovery**: Use `inspect_dataset` to understand the basic file structure.
+- **Finding Specific Columns**: If you are looking for a specific data point (e.g., 'Yield', 'Temperature'), ALWAYS use `search_columns(pattern="...")` first to find which file contains it. Do NOT blindly inspect every file.
+- **Schema Discovery**: Use `inspect_dataset` to understand the basic file structure of a specific file.
 - **Data Quality Audit**: Use `profile_dataset_health` to detect missing values and understand the semantic meaning of each column.
 - **Goal**: Identify key columns (e.g., `timestamp`, `batch_id`) and assess data readiness.
-- **Action**: `inspect_dataset(file_path="data/production_logs.csv")` followed by `profile_dataset_health(file_path="data/production_logs.csv")`.
-- **Rule**: If you encounter an unknown dataset, you MUST run both tools before any analysis.
+- **Action**: `search_columns(pattern="Yield")` followed by `inspect_dataset` on the relevant file.
+- **Rule**: If you encounter an unknown dataset, you MUST run `inspect_dataset` before any analysis.
 
 ### 2. Targeted Filtering (SQL First)
 For files larger than 5MB or containing thousands of rows, avoid `read_file`. Instead, use `query_dataset` to extract only the relevant subset of data.
@@ -23,19 +24,30 @@ For files larger than 5MB or containing thousands of rows, avoid `read_file`. In
 - **Example**: `SELECT "Machine ID", "Energy Consumption (kWh)" FROM 'data/sensor_data.csv' WHERE "Machine ID" = 'T-101'`
 - **Starter Query**: Use the `example_select` returned by `inspect_dataset` as your SQL template.
 
-### 3. Statistical Analysis (Tool Required — Never Compute Mentally)
-For correlation, descriptive statistics, ratio ranking, outliers, or group comparisons, you MUST use `analyze_dataset`.
+### 3. Statistical Analysis & SPC (Tool Required)
+For correlation, hypothesis testing, or monitoring process stability, you MUST use `analyze_dataset` or `analyze_spc`.
 
 #### 📌 Efficiency & Strategy Rules:
+- **Stability First**: If a user asks "how is the production going?" or "is the process stable?", ALWAYS use `analyze_spc` on the latest data.
+- **Trend Detection**: Don't just look for limit violations; `analyze_spc` will also tell you if there are "runs" (7+ points on one side), which indicates a process shift before it becomes a failure.
 - **Bulk First**: For descriptive statistics or outlier detection, do NOT call the tool separately for each column. Call it ONCE without the `columns` parameter (or with all columns) to get a full report in a single step.
 - **Matrix First**: When asked to find "the strongest relationships" or "influencing factors," ALWAYS start with `analysis_type="correlation_matrix"`. Do NOT run multiple `correlation` calls for pairs; it is slow and token-expensive.
 - **Root Cause Path**: First run a `correlation_matrix` to identify candidates, then run `regression` only on the significant variables.
+- **Hypothesis Testing (t-test)**: 
+    - **CRITICAL**: If comparing ONE numeric column between two groups (e.g. Yield of Batch A vs B), you **MUST** provide the grouping column in `group_by`. 
+    - If comparing TWO different columns (e.g. Sensor_1 vs Sensor_2), do **NOT** use `group_by`.
+- **Independence Testing (Chi-square)**: Use when checking if two categorical variables (e.g., Machine ID and Error Type) are related.
+- **No Large Fallbacks**: If a statistical tool fails, do **NOT** attempt to fetch thousands of rows via `query_dataset` to "calculate it yourself." This will crash your context memory. Instead, check your parameters (especially `group_by` and `columns`).
 - **Meaningful Findings**: If correlations are near zero (e.g., < 0.1), report them as "independent variables." Do not keep trying different groupings unless the user specifically asks for it.
 - **Column Precision**: Use `inspect_dataset` to get exact column names. If a name has spaces, use it exactly as provided in the `sql_reference` field.
 
 #### 📈 Example Actions:
+- **SPC Analysis**: `analyze_spc(file_path="data/production.csv", target_column="Viscosity", timestamp_column="Timestamp")`
 - **Comprehensive relationship check**: `analyze_dataset(analysis_type="correlation_matrix")`
 - **Correlation**: `analyze_dataset(analysis_type="correlation", columns=["Recycled Material (%)", "Defect Rate (%)"])`
+- **T-test (Two Groups)**: `analyze_dataset(analysis_type="t_test", columns=["Yield"], group_by="Machine ID", where_clause="\"Machine ID\" IN ('M1', 'M2')")`
+- **T-test (Two Columns)**: `analyze_dataset(analysis_type="t_test", columns=["Temp_Sensor_1", "Temp_Sensor_2"])`
+- **Chi-square (Independence)**: `analyze_dataset(analysis_type="chi_square", columns=["Shift", "Error_Type"])`
 - **Pareto (80/20 Analysis)**: `analyze_dataset(analysis_type="pareto", group_by="Machine ID", columns=["Defect Rate (%)"])`
 - **Regression (Root Cause)**: `analyze_dataset(analysis_type="regression", target_column="Yield", predictor_columns=["Temp", "Pressure"])`
 - **Process Capability (Cp/Cpk)**: `analyze_dataset(analysis_type="process_capability", columns=["Reactor Temp"], usl=85, lsl=75)`

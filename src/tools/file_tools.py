@@ -67,6 +67,58 @@ class ReadFileTool(BaseTool):
         except Exception as e:
             return {"error": str(e)}
 
+class ListFilesTool(BaseTool):
+    @property
+    def name(self) -> str:
+        return "list_files"
+
+    @property
+    def description(self) -> str:
+        return "Lists all files and subdirectories in a specified local directory. Use this to discover datasets or documents when you are unsure of the exact file path."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "directory_path": {
+                    "type": "string",
+                    "description": "The local directory path to list (e.g., 'data/' or '.'). Defaults to the current directory.",
+                    "default": "."
+                }
+            }
+        }
+
+    def execute(self, directory_path: str = ".", **kwargs) -> Dict[str, Any]:
+        """Lists contents of a directory."""
+        try:
+            if not os.path.exists(directory_path):
+                return {"error": f"Directory not found: {directory_path}"}
+            
+            if not os.path.isdir(directory_path):
+                return {"error": f"Path is not a directory: {directory_path}"}
+
+            items = os.listdir(directory_path)
+            files = []
+            directories = []
+
+            for item in items:
+                full_path = os.path.join(directory_path, item)
+                if os.path.isdir(full_path):
+                    directories.append(item)
+                else:
+                    files.append(item)
+
+            return {
+                "directory": directory_path,
+                "files": sorted(files),
+                "directories": sorted(directories),
+                "status": "success",
+                "count": len(items)
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
 class WriteFileTool(BaseTool):
     @property
     def name(self) -> str:
@@ -113,6 +165,7 @@ class WriteFileTool(BaseTool):
 
 # Register file tools
 ToolRegistry.register(ReadFileTool())
+ToolRegistry.register(ListFilesTool())
 ToolRegistry.register(WriteFileTool())
 
 # Legacy functions for backward compatibility
