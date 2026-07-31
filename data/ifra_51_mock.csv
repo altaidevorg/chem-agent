@@ -1,0 +1,4 @@
+Substance Name,CAS,SMILES,Restriction Type,Cat 1,Cat 4,Cat 5A
+Phenylacetaldehyde,122-78-1,c1ccc(CC=O)cc1,Restricted,0.01,0.5,0.1
+Hexyl Cinnamic Aldehyde,101-86-0,CCCCCCC=C(C=O)c1ccccc1,Prohibited,0.0,0.0,0.0
+Lilial,80-54-6,CC(Cc1ccc(cc1)C(C)(C)C)C=O,Restricted,0.05,0.2,0.1

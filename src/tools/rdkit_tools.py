@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from io import StringIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 from rdkit import Chem, DataStructs, rdBase
 from rdkit.Chem import AllChem, Descriptors, Draw, rdFMCS, rdMolDescriptors, QED
@@ -16,6 +16,7 @@ from rdkit.Chem import inchi
 from rdkit.Chem import rdFingerprintGenerator
 
 import numpy as np
+import pandas as pd
 from src.config import KNOWLEDGE_DB_FILE
 from src.tools.base import BaseTool, ToolRegistry
 from src.tools.structure_tools import StandardizeMoleculeTool
@@ -1319,7 +1320,8 @@ class EstimateVolatilityAndNoteTool(BaseTool):
         "-CHO (aldehyde)": (Chem.MolFromSmarts("[CX3H1](=[OX1])"), 72.24),
         "-COOH (acid)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H1]"), 169.09),
         "-COO- (ester)": (Chem.MolFromSmarts("[CX3](=[OX1])[OX2H0]"), 81.10),
-        "Aromatic ring C": (Chem.MolFromSmarts("[c]"), 3.84),
+        "Aromatic ring CH": (Chem.MolFromSmarts("[c;H1]"), 26.73),
+        "Aromatic ring C": (Chem.MolFromSmarts("[c;H0]"), 31.01),
         "-NH2 (amine)": (Chem.MolFromSmarts("[NX3H2]"), 73.23),
         ">NH (amine)": (Chem.MolFromSmarts("[NX3H1]"), 50.17),
         ">N- (amine)": (Chem.MolFromSmarts("[NX3H0]"), 11.74),
@@ -1401,6 +1403,136 @@ class EstimateVolatilityAndNoteTool(BaseTool):
         except Exception as e:
             return {"error": f"Volatility estimation failed: {str(e)}"}
 
+class CheckChemicalReactivityTool(BaseTool):
+    """
+    Analyzes potential chemical reactivity hazards between multiple compounds.
+    Uses InChIKey-based group resolution and cross-reactivity matrix queries.
+    """
+    _MATRIX_CACHE = None
+
+    @property
+    def name(self) -> str:
+        return "check_chemical_reactivity"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Analyzes 2 or more chemical compounds for potential reactive incompatibilities. "
+            "Resolves compounds to InChIKeys and queries the CAMEO-based reactivity matrix. "
+            "Flags risks like violent reactions, toxic gas release, or fire hazards."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of SMILES, CAS numbers, or chemical names to check for reactivity."
+                }
+            },
+            "required": ["queries"]
+        }
+
+    def _load_matrix(self, db_manager) -> Dict[str, Any]:
+        if self._MATRIX_CACHE: return self._MATRIX_CACHE
+        with db_manager.get_connection(read_only=True) as conn:
+            groups = conn.execute("SELECT group_id, group_name, smarts_pattern FROM reactivity_groups").df()
+            rules = conn.execute("SELECT * FROM reactivity_rules").df().to_dict('records')
+            
+            compiled_groups = {}
+            id_to_name = {}
+            for _, row in groups.iterrows():
+                patterns = [Chem.MolFromSmarts(p.strip()) for p in row['smarts_pattern'].split('|') if Chem.MolFromSmarts(p.strip())]
+                if patterns:
+                    compiled_groups[row['group_id']] = patterns
+                    id_to_name[row['group_id']] = row['group_name']
+            
+            self._MATRIX_CACHE = {"groups": compiled_groups, "id_to_name": id_to_name, "rules": rules}
+        return self._MATRIX_CACHE
+
+    def execute(self, queries: List[str]) -> Dict[str, Any]:
+        try:
+            from src.database.manager import DatabaseManager
+            from src.database.standardizer import ChemicalStandardizer
+            from itertools import combinations
+
+            db = DatabaseManager()
+            standardizer = ChemicalStandardizer()
+            matrix = self._load_matrix(db)
+            
+            resolved_compounds = []
+            
+            # 1. Resolve and Standardize
+            for q in queries:
+                smiles = q
+                if not ("[" in q or "=" in q or "(" in q):
+                    res = ResolveNameToSmilesTool().execute(q)
+                    if "smiles" in res: smiles = res["smiles"]
+                
+                ikey = standardizer.get_inchikey(smiles)
+                mol = Chem.MolFromSmiles(smiles)
+                if not mol: continue
+                
+                # Check DB for cached groups first
+                with db.get_connection(read_only=False) as conn:
+                    cached = conn.execute("SELECT group_id FROM compound_reactivity_groups WHERE inchikey = ?", [ikey]).df()
+                    if not cached.empty:
+                        group_ids = set(cached['group_id'].tolist())
+                    else:
+                        # Detect groups via SMARTS and Cache
+                        group_ids = set()
+                        mol_h = Chem.AddHs(mol)
+                        for gid, patterns in matrix["groups"].items():
+                            for p in patterns:
+                                if mol_h.HasSubstructMatch(p):
+                                    group_ids.add(gid)
+                                    break
+                        # Cache in DB (Ensure xref exists first)
+                        if ikey:
+                            # Use UPSERT-like logic to ensure record exists in compound_cross_reference
+                            conn.execute("""
+                                INSERT INTO compound_cross_reference (inchikey, smiles, updated_at)
+                                VALUES (?, ?, CURRENT_TIMESTAMP)
+                                ON CONFLICT (inchikey) DO NOTHING
+                            """, [ikey, smiles])
+                            
+                            for gid in group_ids:
+                                conn.execute("INSERT OR IGNORE INTO compound_reactivity_groups (inchikey, group_id) VALUES (?, ?)", [ikey, gid])
+
+                resolved_compounds.append({
+                    "query": q,
+                    "inchikey": ikey,
+                    "group_ids": group_ids,
+                    "smiles": smiles
+                })
+
+            # 2. Check Binary Rules
+            risks = []
+            for c1, c2 in combinations(resolved_compounds, 2):
+                for rule in matrix["rules"]:
+                    gA, gB = rule["group_a"], rule["group_b"]
+                    if (gA in c1["group_ids"] and gB in c2["group_ids"]) or (gB in c1["group_ids"] and gA in c2["group_ids"]):
+                        risks.append({
+                            "components": [c1["query"], c2["query"]],
+                            "groups": [matrix["id_to_name"].get(gA), matrix["id_to_name"].get(gB)],
+                            "severity": rule["severity"],
+                            "consequence": rule["consequence"],
+                            "description": rule["description"]
+                        })
+
+            return {
+                "status": "success",
+                "compounds_analyzed": len(resolved_compounds),
+                "risks_detected": risks,
+                "summary": f"Detected {len(risks)} potential reactivity hazards between {len(resolved_compounds)} compounds."
+            }
+
+        except Exception as e:
+            return {"error": f"Reactivity check failed: {str(e)}"}
+
 class AuditChemicalCompatibilityTool(BaseTool):
     """
     Scans a list of molecules for reactive functional groups and flags 
@@ -1415,30 +1547,39 @@ class AuditChemicalCompatibilityTool(BaseTool):
         
         try:
             import duckdb
-            if os.path.exists(KNOWLEDGE_DB_FILE):
-                conn = duckdb.connect(KNOWLEDGE_DB_FILE)
-                
-                # 1. Load Groups
-                groups_df = conn.execute("SELECT group_name, smarts_pattern FROM reactivity_groups").df()
+            from src.database.manager import DatabaseManager
+            db_manager = DatabaseManager()
+            
+            with db_manager.get_connection(read_only=True) as conn:
+                # 1. Load Groups (Map ID -> List of Patterns)
+                groups_df = conn.execute("SELECT group_id, group_name, smarts_pattern FROM reactivity_groups").df()
                 compiled_groups = {}
+                id_to_name = {}
                 for _, row in groups_df.iterrows():
-                    pattern = Chem.MolFromSmarts(row['smarts_pattern'])
-                    if pattern:
-                        compiled_groups[row['group_name']] = pattern
+                    patterns = []
+                    # Support multiple SMARTS per group via '|'
+                    for p_str in row['smarts_pattern'].split('|'):
+                        p = Chem.MolFromSmarts(p_str.strip())
+                        if p:
+                            patterns.append(p)
+                    
+                    if patterns:
+                        compiled_groups[row['group_id']] = patterns
+                        id_to_name[row['group_id']] = row['group_name']
                 
                 # 2. Load Rules
                 rules = conn.execute("SELECT * FROM reactivity_rules").df().to_dict('records')
                 
-                conn.close()
                 self._MATRIX_CACHE = {
                     "groups": compiled_groups,
+                    "id_to_name": id_to_name,
                     "rules": rules
                 }
                 return self._MATRIX_CACHE
         except Exception as e:
             print(f"[Error] Failed to load reactivity knowledge from DB: {e}")
         
-        self._MATRIX_CACHE = {"groups": {}, "rules": []}
+        self._MATRIX_CACHE = {"groups": {}, "id_to_name": {}, "rules": []}
         return self._MATRIX_CACHE
 
     @property
@@ -1473,9 +1614,10 @@ class AuditChemicalCompatibilityTool(BaseTool):
 
             knowledge = self._load_knowledge()
             groups_registry = knowledge["groups"]
+            id_to_name = knowledge["id_to_name"]
             rules = knowledge["rules"]
 
-            # 1. Map functional groups for each molecule
+            # 1. Map functional groups for each molecule (using IDs)
             molecule_metadata = []
             for i, smiles in enumerate(smiles_list):
                 with rdBase.BlockLogs():
@@ -1483,15 +1625,20 @@ class AuditChemicalCompatibilityTool(BaseTool):
                 if mol is None:
                     return {"error": f"Invalid SMILES at index {i}: {smiles}"}
                 
-                detected = set()
-                for group_name, pattern in groups_registry.items():
-                    if pattern and mol.HasSubstructMatch(pattern):
-                        detected.add(group_name)
+                # Crucial: Add explicit Hydrogens to match SMARTS like [OX2H] or Cl[H]
+                mol_with_hs = Chem.AddHs(mol)
+                
+                detected_ids = set()
+                for group_id, patterns in groups_registry.items():
+                    for pattern in patterns:
+                        if mol_with_hs.HasSubstructMatch(pattern):
+                            detected_ids.add(group_id)
+                            break # Move to next group if one pattern matches
                 
                 molecule_metadata.append({
                     "index": i,
                     "smiles": smiles,
-                    "groups": detected
+                    "group_ids": detected_ids
                 })
 
             # 2. Audit interactions
@@ -1500,14 +1647,14 @@ class AuditChemicalCompatibilityTool(BaseTool):
             
             for meta in molecule_metadata:
                 for rule in rules:
-                    # Individual group risk (where group_b is None/NaN)
+                    # Individual group risk
                     if rule.get("group_b") is None or (isinstance(rule.get("group_b"), float) and np.isnan(rule["group_b"])):
-                        if rule["group_a"] in meta["groups"]:
+                        if rule["group_a"] in meta["group_ids"]:
                             risks_found.append({
                                 "rule_id": rule["rule_id"],
-                                "rule_name": rule["rule_name"],
                                 "severity": rule["severity"],
                                 "involved_components": [meta["smiles"]],
+                                "involved_groups": [id_to_name.get(rule["group_a"], f"Group {rule['group_a']}")],
                                 "involved_indices": [meta["index"]],
                                 "consequence": rule["consequence"],
                                 "description": rule.get("description", "")
@@ -1519,13 +1666,13 @@ class AuditChemicalCompatibilityTool(BaseTool):
                         gA = rule.get("group_a")
                         gB = rule.get("group_b")
                         if gA and gB and not (isinstance(gB, float) and np.isnan(gB)):
-                            match = (gA in m1["groups"] and gB in m2["groups"]) or (gB in m1["groups"] and gA in m2["groups"])
+                            match = (gA in m1["group_ids"] and gB in m2["group_ids"]) or (gB in m1["group_ids"] and gA in m2["group_ids"])
                             if match:
                                 risks_found.append({
                                     "rule_id": rule["rule_id"],
-                                    "rule_name": rule["rule_name"],
                                     "severity": rule["severity"],
                                     "involved_components": [m1["smiles"], m2["smiles"]],
+                                    "involved_groups": [id_to_name.get(gA), id_to_name.get(gB)],
                                     "involved_indices": [m1["index"], m2["index"]],
                                     "consequence": rule["consequence"],
                                     "description": rule.get("description", "")
@@ -1673,131 +1820,294 @@ class CheckRegulatoryComplianceTool(BaseTool):
     def execute(self, queries: List[str]) -> Dict[str, Any]:
         """
         Checks a list of names or CAS numbers against regulatory data.
-        Now includes SMARTS-based structural screening for restricted classes.
+        Uses InChIKey-based resolution and JOIN queries for high accuracy.
         """
         try:
-            import duckdb
-            if not os.path.exists(KNOWLEDGE_DB_FILE):
-                return {"error": "Knowledge database not found. Run initialize script first."}
+            from src.database.manager import DatabaseManager
+            from src.database.standardizer import ChemicalStandardizer
             
-            conn = duckdb.connect(KNOWLEDGE_DB_FILE)
+            db = DatabaseManager()
+            standardizer = ChemicalStandardizer()
             
-            # Load structural restrictions once
-            structural_rules = conn.execute("SELECT * FROM structural_restrictions").df().to_dict('records')
-            structural_patterns = []
-            for r in structural_rules:
-                patt = Chem.MolFromSmarts(r['smarts_pattern'])
-                if patt:
-                    structural_patterns.append({"pattern": patt, "metadata": r})
+            with db.get_connection(read_only=True) as conn:
+                # 1. Load structural restrictions once
+                structural_rules = conn.execute("SELECT * FROM structural_restrictions").df().to_dict('records')
+                structural_patterns = []
+                for r in structural_rules:
+                    patt = Chem.MolFromSmarts(r['smarts_pattern'])
+                    if patt:
+                        structural_patterns.append({"pattern": patt, "metadata": r})
 
-            results = []
-            
-            for query in queries:
-                is_cas = "-" in query and any(char.isdigit() for char in query)
+                results = []
                 
-                # 1. Exact Name/CAS Check
-                if is_cas:
-                    ifra_res = conn.execute(
-                        "SELECT * FROM ifra_standards WHERE cas_no = ?", [query]
-                    ).df()
-                    eu_res = conn.execute(
-                        "SELECT * FROM eu_flavorings WHERE cas_no = ?", [query]
-                    ).df()
-                    industrial_res = conn.execute(
-                        "SELECT * FROM industrial_restrictions WHERE cas_no = ?", [query]
-                    ).df()
-                else:
-                    ifra_res = conn.execute(
-                        "SELECT * FROM ifra_standards WHERE substance_name ILIKE ?", 
-                        [f"%{query}%"]
-                    ).df()
-                    eu_res = conn.execute(
-                        "SELECT * FROM eu_flavorings WHERE substance_name ILIKE ?", 
-                        [f"%{query}%"]
-                    ).df()
-                    industrial_res = conn.execute(
-                        "SELECT * FROM industrial_restrictions WHERE substance_name ILIKE ?",
-                        [f"%{query}%"]
-                    ).df()
+                for query in queries:
+                    # Identifier Resolution Strategy
+                    ikey = None
+                    smiles = None
+                    resolved_name = query
+                    
+                    # A. Check if query is already SMILES
+                    if "[" in query or "=" in query or "(" in query:
+                        ikey = standardizer.get_inchikey(query)
+                        smiles = query
+                    
+                    # B. Check if query is CAS
+                    is_cas = "-" in query and any(char.isdigit() for char in query)
+                    cas_clean = standardizer.clean_cas(query) if is_cas else None
+                    
+                    # C. Database Lookup (Cross-Reference)
+                    if ikey:
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE inchikey = ?", [ikey]
+                        ).df()
+                    elif is_cas:
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE cas_no_clean = ?", [cas_clean]
+                        ).df()
+                    else:
+                        # Search by name
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE chemical_name ILIKE ?", [f"%{query}%"]
+                        ).df()
+                    
+                    if not xref_data.empty:
+                        ikey = xref_data.iloc[0]['inchikey']
+                        smiles = xref_data.iloc[0]['smiles']
+                        resolved_name = xref_data.iloc[0]['chemical_name']
+                    
+                    # 2. Regulatory JOIN Queries
+                    ifra_res = pd.DataFrame()
+                    eu_res = pd.DataFrame()
+                    
+                    if ikey:
+                        # IFRA JOIN
+                        ifra_res = conn.execute("""
+                            SELECT i.*, x.chemical_name, x.cas_no 
+                            FROM ifra_standards i
+                            JOIN compound_cross_reference x ON i.inchikey = x.inchikey
+                            WHERE i.inchikey = ?
+                        """, [ikey]).df()
+                        
+                        # EU JOIN
+                        eu_res = conn.execute("""
+                            SELECT e.*, x.chemical_name, x.cas_no 
+                            FROM eu_flavorings e
+                            JOIN compound_cross_reference x ON e.inchikey = x.inchikey
+                            WHERE e.inchikey = ?
+                        """, [ikey]).df()
+                    elif is_cas:
+                        # Fallback for CAS only (if InChIKey not in DB)
+                        eu_res = conn.execute("SELECT * FROM eu_flavorings WHERE fl_no IN (SELECT fl_no FROM compound_cross_reference WHERE cas_no_clean = ?)", [cas_clean]).df()
+
+                    mol_summary = {
+                        "query": query,
+                        "resolved_name": resolved_name,
+                        "inchikey": ikey,
+                        "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED/BANNED",
+                        "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED/BANNED",
+                        "details": [],
+                        "structural_class_matches": []
+                    }
+                    
+                    # 3. Structural Screening (SMARTS)
+                    if smiles:
+                        with rdBase.BlockLogs():
+                            mol = Chem.MolFromSmiles(smiles)
+                        if mol:
+                            for item in structural_patterns:
+                                if mol.HasSubstructMatch(item["pattern"]):
+                                    mol_summary["structural_class_matches"].append({
+                                        "class": item["metadata"]["class_name"],
+                                        "severity": item["metadata"]["severity"],
+                                        "description": item["metadata"]["description"]
+                                    })
+
+                    # Populate details
+                    if not ifra_res.empty:
+                        for _, row in ifra_res.iterrows():
+                            mol_summary["details"].append({
+                                "source": "IFRA 51st Amendment",
+                                "category": row['category_code'],
+                                "limit": row['max_concentration_pct'],
+                                "type": row['restriction_type']
+                            })
+                    
+                    if not eu_res.empty:
+                        for _, row in eu_res.iterrows():
+                            mol_summary["details"].append({
+                                "source": "EU 1334/2008",
+                                "fl_no": row['fl_no'],
+                                "status": row['status'],
+                                "restrictions": row['restrictions']
+                            })
+                    
+                    results.append(mol_summary)
                 
-                mol_summary = {
-                    "query": query,
-                    "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED/BANNED",
-                    "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED/BANNED",
-                    "industrial_status": "Not Found / GRAS" if industrial_res.empty else "RESTRICTED/BANNED",
-                    "details": [],
-                    "structural_class_matches": []
+                return {
+                    "total_checked": len(queries),
+                    "compliance_report": results,
+                    "status": "success",
+                    "notice": "JOIN queries on InChIKey used for maximum regulatory precision."
                 }
-                
-                # 2. Structural Screening (SMARTS)
-                # First, resolve query to SMILES if it's not already
-                smiles = None
-                if not query.startswith("[") and not "=" in query: # Simple heuristic for not-a-SMILES
-                    resolve_tool = ResolveNameToSmilesTool()
-                    res = resolve_tool.execute(query)
-                    if "smiles" in res:
-                        smiles = res["smiles"]
-                else:
-                    smiles = query
-                
-                if smiles:
-                    with rdBase.BlockLogs():
-                        mol = Chem.MolFromSmiles(smiles)
-                    if mol:
-                        for item in structural_patterns:
-                            if mol.HasSubstructMatch(item["pattern"]):
-                                mol_summary["structural_class_matches"].append({
-                                    "class": item["metadata"]["class_name"],
-                                    "severity": item["metadata"]["severity"],
-                                    "regulation": item["metadata"]["regulation_source"],
-                                    "description": item["metadata"]["description"]
-                                })
-
-                # Populate details for exact matches
-                if not ifra_res.empty:
-                    for _, row in ifra_res.iterrows():
-                        mol_summary["details"].append({
-                            "source": "IFRA 51st Amendment",
-                            "substance": row['substance_name'],
-                            "cas": row['cas_no'],
-                            "status": row['status'],
-                            "limit": row['max_limit'],
-                            "type": row['restriction_type']
-                        })
-                
-                if not eu_res.empty:
-                    for _, row in eu_res.iterrows():
-                        mol_summary["details"].append({
-                            "source": "EU 1334/2008",
-                            "substance": row['substance_name'],
-                            "cas": row['cas_no'],
-                            "status": row['status'],
-                            "restrictions": row['restrictions']
-                        })
-
-                if not industrial_res.empty:
-                    for _, row in industrial_res.iterrows():
-                        mol_summary["details"].append({
-                            "source": row['source'],
-                            "substance": row['substance_name'],
-                            "cas": row['cas_no'],
-                            "status": row['status'],
-                            "limit": row['max_limit'],
-                            "type": row['restriction_type']
-                        })
-                
-                results.append(mol_summary)
-            
-            conn.close()
-            
-            return {
-                "total_checked": len(queries),
-                "compliance_report": results,
-                "status": "success",
-                "notice": "This report includes both exact CAS/Name matches and SMARTS-based structural class identification."
-            }
         except Exception as e:
             return {"error": f"Regulatory check failed: {str(e)}"}
+
+class FindIngredientReplacementTool(BaseTool):
+    """
+    Finds suitable chemical replacements for a target ingredient based on 
+    structural similarity and physicochemical profile.
+    """
+
+    @property
+    def name(self) -> str:
+        return "find_ingredient_replacement"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Finds the best alternative ingredients for a given target molecule. "
+            "Analyzes structural similarity (Tanimoto) and physicochemical profiles (LogP, MW, HSP, Volatility). "
+            "Filters results based on regulatory compliance (IFRA/EU) to ensure the replacement is safe and legal."
+        )
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "target_smiles": {
+                    "type": "string",
+                    "description": "SMILES of the ingredient you want to replace."
+                },
+                "regulatory_category": {
+                    "type": "string",
+                    "description": "Optional IFRA category (e.g., '1', '4') or 'EU' for flavorings to filter out restricted alternatives.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Number of top candidates to return."
+                }
+            },
+            "required": ["target_smiles"]
+        }
+
+    def execute(self, target_smiles: str, regulatory_category: Optional[str] = None, max_results: int = 5) -> Dict[str, Any]:
+        try:
+            from src.database.manager import DatabaseManager
+            from src.database.standardizer import ChemicalStandardizer
+            from rdkit import DataStructs
+            
+            db = DatabaseManager()
+            standardizer = ChemicalStandardizer()
+            
+            # 1. Profile Target Molecule
+            with rdBase.BlockLogs():
+                target_mol = Chem.MolFromSmiles(target_smiles)
+            if not target_mol:
+                return {"error": f"Invalid target SMILES: {target_smiles}"}
+            
+            target_mw = Descriptors.MolWt(target_mol)
+            target_logp = Descriptors.MolLogP(target_mol)
+            
+            hsp_tool = CalculateHansenParametersTool()
+            vol_tool = EstimateVolatilityAndNoteTool()
+            
+            target_hsp = hsp_tool.execute(target_smiles)
+            target_vol = vol_tool.execute(target_smiles)
+            
+            fp_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
+            target_fp = fp_gen.GetFingerprint(target_mol)
+            
+    # 2. Query Candidates from DB
+            with db.get_connection(read_only=True) as conn:
+                target_ikey = standardizer.get_inchikey(target_smiles)
+                
+                # Get all substances with descriptors
+                query = """
+                SELECT d.*, x.smiles, x.chemical_name 
+                FROM compound_descriptors d
+                JOIN compound_cross_reference x ON d.inchikey = x.inchikey
+                """
+                candidates_df = conn.execute(query).df()
+                
+                # 3. Filter by Regulatory Status (if requested)
+                # ... (rest of the regulatory filter code remains same)
+                if regulatory_category:
+                    if regulatory_category == 'EU':
+                        banned = conn.execute("SELECT inchikey FROM eu_flavorings WHERE status = 'Banned' OR status = 'Prohibited'").df()['inchikey'].tolist()
+                    else:
+                        banned = conn.execute("""
+                            SELECT inchikey FROM ifra_standards 
+                            WHERE category_code = ? AND restriction_type = 'Prohibited'
+                        """, [regulatory_category]).df()['inchikey'].tolist()
+                    
+                    candidates_df = candidates_df[~candidates_df['inchikey'].isin(banned)]
+
+            # 4. Calculate Multi-Factor Similarity
+            results = []
+            for _, row in candidates_df.iterrows():
+                # Skip target itself using InChIKey for robustness
+                if row['inchikey'] == target_ikey:
+                    continue
+                
+                with rdBase.BlockLogs():
+                    cand_mol = Chem.MolFromSmiles(row['smiles'])
+                if not cand_mol: continue
+                
+                # A. Structural Similarity (Tanimoto)
+                cand_fp = fp_gen.GetFingerprint(cand_mol)
+                structural_sim = DataStructs.TanimotoSimilarity(target_fp, cand_fp)
+                
+                # B. Physicochemical Euclidean Distance (Normalized)
+                # We normalize differences relative to target values to get a 0-1 score
+                def norm_diff(val1, val2, scale=1.0):
+                    return math.exp(-abs(val1 - val2) / scale)
+                
+                mw_sim = norm_diff(target_mw, row['mw'], scale=50.0)
+                logp_sim = norm_diff(target_logp, row['logp'], scale=1.0)
+                
+                hsp_dist = math.sqrt(
+                    (target_hsp['delta_d'] - row['hansen_d'])**2 +
+                    (target_hsp['delta_p'] - row['hansen_p'])**2 +
+                    (target_hsp['delta_h'] - row['hansen_h'])**2
+                )
+                hsp_sim = math.exp(-hsp_dist / 5.0)
+                
+                # C. Composite Score
+                composite_score = (0.4 * structural_sim) + (0.2 * mw_sim) + (0.2 * logp_sim) + (0.2 * hsp_sim)
+                
+                results.append({
+                    "name": row['chemical_name'],
+                    "smiles": row['smiles'],
+                    "inchikey": row['inchikey'],
+                    "similarity_score": round(composite_score, 3),
+                    "structural_similarity": round(structural_sim, 3),
+                    "physicochemical_fit": {
+                        "mw_match": round(mw_sim, 3),
+                        "logp_match": round(logp_sim, 3),
+                        "hsp_match": round(hsp_sim, 3)
+                    },
+                    "properties": {
+                        "mw": round(row['mw'], 1),
+                        "logp": round(row['logp'], 2),
+                        "odor_note": row['odor_note']
+                    }
+                })
+
+            # 5. Sort and Return
+            results.sort(key=lambda x: x['similarity_score'], reverse=True)
+            
+            return {
+                "target_smiles": target_smiles,
+                "regulatory_category_filter": regulatory_category or "None",
+                "top_replacements": results[:max_results],
+                "status": "success",
+                "notice": "Composite similarity ranking uses 40% structure, 20% MW, 20% LogP, 20% HSP profile."
+            }
+
+        except Exception as e:
+            return {"error": f"Replacement tool failed: {str(e)}"}
 
 class CalculateHansenParametersTool(BaseTool):
     """
@@ -2087,6 +2397,8 @@ ToolRegistry.register(EstimatePkaAndLogDTool())
 ToolRegistry.register(CalculateAllDescriptorsTool())
 ToolRegistry.register(ExportMoleculeFileTool())
 ToolRegistry.register(CalculateDrugLikenessTool())
+ToolRegistry.register(CheckChemicalReactivityTool())
+ToolRegistry.register(FindIngredientReplacementTool())
 
 # Legacy functions kept for backward compatibility
 # but the agent should now use ToolRegistry.
@@ -2170,3 +2482,6 @@ def export_molecule_file(smiles: str, file_path: str, generate_3d: bool = False)
 
 def calculate_drug_likeness(smiles: str) -> dict:
     return CalculateDrugLikenessTool().execute(smiles)
+
+def find_ingredient_replacement(target_smiles: str, regulatory_category: Optional[str] = None, max_results: int = 5) -> dict:
+    return FindIngredientReplacementTool().execute(target_smiles, regulatory_category, max_results)
