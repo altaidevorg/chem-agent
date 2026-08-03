@@ -16,7 +16,7 @@ def safe_json_dumps(obj, **kwargs):
     return json.dumps(obj, cls=CustomEncoder, ensure_ascii=False, **kwargs)
 
 from src.vllm_client import get_vllm_client
-from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR
+from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR, MAX_OUTPUT_TOKENS, MAX_CONTEXT_TOKENS
 from src.agent.prompts import SYSTEM_PROMPT
 from src.agent.memory import AgentMemory
 from src.tools.base import ToolRegistry
@@ -196,10 +196,16 @@ class ChemistryAgent:
             return {"error": f"Execution error in tool '{name}': {str(e)}"}
 
     def run(self, user_query: str) -> str:
-        """Main execution loop for the agent."""
+        """Main execution loop for the agent with async compaction support."""
         self._write_telemetry("session_start", {"user_query": user_query})
         
-        # 1. Skill Routing: Select relevant skills for this query
+        # 0. Ensure any running background compaction finishes before proceeding
+        self.memory.ensure_compaction_finished(timeout=2.0)
+        
+        # 1. Fast sync tool pruning if context is critically high
+        self.memory.compact_tool_results_fast()
+
+        # 2. Skill Routing: Select relevant skills for this query
         print(f"[Agent] Routing query to relevant skills...")
         selected_skill_names = self.skill_router.route(user_query)
         if selected_skill_names:
@@ -207,7 +213,7 @@ class ChemistryAgent:
         else:
             print(f"[Agent] No specific skills selected for this query.")
 
-        # 2. Contextual Tool Scoping: Get required tools for selected skills
+        # 3. Contextual Tool Scoping: Get required tools for selected skills
         required_tool_names = self.skill_registry.get_required_tools_for_skills(selected_skill_names)
 
         # Use required tools if any, otherwise start with an empty list (only mandatory tools will be active)
@@ -218,7 +224,7 @@ class ChemistryAgent:
         else:
             print(f"[Agent] Starting with minimal baseline toolset (progressive discovery mode).")
 
-        # 3. Inject current chemical context and selected skills into the system prompt
+        # 4. Inject current chemical context and selected skills into the system prompt
         context_summary = self.memory.get_context_summary()
         skills_summary = self.skill_registry.get_capabilities_summary(selected_skill_names)
         current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}"
@@ -230,16 +236,59 @@ class ChemistryAgent:
         while iteration < self.max_iterations:
             iteration += 1
             
-            # --- AUTO-COMPACTION CHECK ---
-            # We check before every API call to ensure tool results or long history 
-            # don't exceed the model's context window.
-            self.memory.check_and_compact(self, current_system_prompt)
-            # -----------------------------
+            # Refresh run_messages - thread-safe copy
+            with self.memory._lock:
+                run_messages = [{"role": "system", "content": current_system_prompt}] + list(self.memory.messages)
 
-            # Refresh run_messages after potential compaction
-            run_messages = [{"role": "system", "content": current_system_prompt}]
-            for msg in self.memory.messages:
-                run_messages.append(msg)
+            # --- DYNAMIC TOKEN BUDGETING & EARLY COMPACTION GUARD ---
+            # 1. Realistic input token calculation
+            available_tools = self._get_available_tools(scoped_tool_names)
+            tool_tokens = self.memory.count_tokens(safe_json_dumps(available_tools)) if available_tools else 0
+            system_prompt_tokens = self.memory.count_tokens(current_system_prompt)
+            
+            # Thread-safe calculation of message tokens including tool_calls
+            messages_tokens = 0
+            with self.memory._lock:
+                for m in self.memory.messages:
+                    messages_tokens += self.memory.count_tokens(m.get("content") or "")
+                    if "tool_calls" in m and m["tool_calls"]:
+                        messages_tokens += self.memory.count_tokens(safe_json_dumps(m["tool_calls"]))
+            
+            chat_template_overhead = len(self.memory.messages) * 10
+            
+            total_input_tokens = system_prompt_tokens + messages_tokens + tool_tokens + chat_template_overhead
+            
+            # 2. Dynamic safety margin (min 500 or 5% of input)
+            safety_margin = max(500, int(total_input_tokens * 0.05))
+            
+            # Use the global MAX_CONTEXT_TOKENS from config
+            available_output_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
+            
+            # 3. Early Intervention: Trigger sync compaction if output space is critically low
+            if available_output_space < 1500:
+                print(f"[Agent Warning] Context space tight ({available_output_space} tokens left). Triggering immediate compaction...")
+                self.memory.check_and_compact(self, current_system_prompt, force=True)
+                
+                # Re-calculate after sync compaction
+                with self.memory._lock:
+                    run_messages = [{"role": "system", "content": current_system_prompt}] + list(self.memory.messages)
+                
+                # Re-calculate tokens after compaction
+                messages_tokens = 0
+                with self.memory._lock:
+                    for m in self.memory.messages:
+                        messages_tokens += self.memory.count_tokens(m.get("content") or "")
+                        if "tool_calls" in m and m["tool_calls"]:
+                            messages_tokens += self.memory.count_tokens(safe_json_dumps(m["tool_calls"]))
+                
+                total_input_tokens = system_prompt_tokens + messages_tokens + tool_tokens + chat_template_overhead
+                available_output_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
+
+            # 4. Final Dynamic max_tokens
+            dynamic_max_tokens = min(MAX_OUTPUT_TOKENS, max(1024, available_output_space))
+            
+            print(f"[Agent] (Turn {iteration}) Input: {total_input_tokens} | Space: {available_output_space} | Dynamic Max: {dynamic_max_tokens}")
+            # --------------------------------------------------------
 
             print(f"[Agent] (Turn {iteration}) Requesting completion...")
             
@@ -248,9 +297,10 @@ class ChemistryAgent:
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=run_messages,
-                    tools=self._get_available_tools(scoped_tool_names),
+                    tools=available_tools,
                     tool_choice="auto",
-                    temperature=TEMPERATURE
+                    temperature=TEMPERATURE,
+                    max_tokens=dynamic_max_tokens
                 )
             except Exception as e:
                 error_msg = f"LLM API Error: {str(e)}"
@@ -261,6 +311,12 @@ class ChemistryAgent:
             latency_ms = (turn_end_time - turn_start_time).total_seconds() * 1000
 
             response_message = response.choices[0].message
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            
+            if finish_reason == "length":
+                print(f"[Agent Warning] Response was truncated due to MAX_OUTPUT_TOKENS ({MAX_OUTPUT_TOKENS}) limit!")
+                self._write_telemetry("response_truncated", {"max_tokens": MAX_OUTPUT_TOKENS})
+
             usage = getattr(response, "usage", None)
             usage_data = {
                 "prompt_tokens": getattr(usage, "prompt_tokens", 0),
@@ -432,6 +488,9 @@ class ChemistryAgent:
             # Save final assistant response to memory
             self.memory.add_message("assistant", final_output)
             self.memory.save_to_file()
+            
+            # 🚀 TRIGGER ASYNC COMPACTION: Start background summarization after final response
+            self.memory.trigger_async_compaction(self, current_system_prompt)
             
             self._write_telemetry("session_end", {"final_response": final_output})
             return final_output

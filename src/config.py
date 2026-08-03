@@ -14,7 +14,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "aleynahukmet/chem-coder-merged-model")
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "10"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.1"))
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16384")) 
-MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))  
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))  
 COMPACTION_THRESHOLD = float(os.getenv("COMPACTION_THRESHOLD", "0.75"))
 
 # Path Configuration

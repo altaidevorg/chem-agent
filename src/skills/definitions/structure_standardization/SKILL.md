@@ -4,6 +4,8 @@ description: Standardize chemical structures from SMILES or local files (.mol, .
 required_tools:
   - standardize_molecule
   - import_and_standardize_file
+  - convert_smiles_to_inchi
+  - count_heavy_atoms_and_rings
 ---
 
 # ⚗️ Structure Standardization & Validation Skill

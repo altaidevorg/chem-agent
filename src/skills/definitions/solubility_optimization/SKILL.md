@@ -1,9 +1,10 @@
 ---
 name: solubility_optimization
-description: Optimize solvent selection and formulation stability using Hansen Solubility Parameters (HSP) and HLB.
+description: Optimize solvent selection and formulation stability using Hansen Solubility Parameters (HSP), HLB, and pKa/logD analysis.
 required_tools:
   - calculate_hansen_parameters
   - calculate_emulsion_properties
+  - estimate_pka_and_logd
   - calculate_molecular_similarity
   - estimate_volatility_and_note
   - detect_functional_groups

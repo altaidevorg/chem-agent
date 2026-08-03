@@ -25,6 +25,32 @@ from src.tools.structure_tools import StandardizeMoleculeTool
 # Redirect RDKit C++ warnings/errors to Python stream
 rdBase.WrapLogs()
 
+def _resolve_smiles_or_name(smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Guarantees a valid SMILES is returned.
+    If smiles is missing, invalid, or passed as a common name, resolves it via PubChem.
+    """
+    target = smiles or molecule_name
+    if not target:
+        return None, {"error": "Either 'smiles' or 'molecule_name' must be provided."}
+    
+    # 1. Try parsing as SMILES directly
+    try:
+        with rdBase.BlockLogs():
+            mol = Chem.MolFromSmiles(target)
+        if mol is not None:
+            return target, None
+    except:
+        pass
+    
+    # 2. If parsing fails, treat 'target' as a molecule name and resolve via PubChem
+    resolver = ResolveNameToSmilesTool()
+    res = resolver.execute(molecule_name=target)
+    if res.get("status") == "success" and "smiles" in res:
+        return res["smiles"], None
+        
+    return None, {"error": f"Invalid SMILES pattern and failed to resolve name '{target}' via PubChem."}
+
 class ResolveNameToSmilesTool(BaseTool):
     @property
     def name(self) -> str:
@@ -92,60 +118,51 @@ class CalculateMolecularPropertiesTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Calculates physicochemical properties of a chemical compound given its SMILES string."
+        return "Calculates physicochemical properties of a chemical compound given its SMILES string or common molecule name."
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                "molecule_name": {"type": "string", "description": "Optional common/trade name of the molecule if SMILES is not known."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
-        """Parses a SMILES string and computes standard physicochemical properties using advanced RDKit features."""
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+
         try:
             params = Chem.SmilesParserParams()
             params.sanitize = True
             params.allowCXSMILES = True
             
-            # Use BlockLogs to prevent global stderr pollution and ensure thread-safety
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles, params)
+                mol = Chem.MolFromSmiles(smiles_valid, params)
             
             if mol is None:
-                return {"error": f"SMILES Parse/Syntax Error for input: '{smiles}'. Please verify the chemical structure."}
-            
-            log_p_val = round(Descriptors.MolLogP(mol), 2)
-            hbd_val = Descriptors.NumHDonors(mol)
-            hba_val = Descriptors.NumHAcceptors(mol)
-            tpsa_val = round(Descriptors.TPSA(mol), 2)
-            rot_bonds = Descriptors.NumRotatableBonds(mol)
-            formula = rdMolDescriptors.CalcMolFormula(mol)
-            formal_charge = Chem.GetFormalCharge(mol)
+                return {"error": f"SMILES Parse Error for input: '{smiles_valid}'."}
             
             return {
-                "smiles": smiles,
-                "formula": formula,
-                "formal_charge": formal_charge,
+                "smiles": smiles_valid,
+                "formula": rdMolDescriptors.CalcMolFormula(mol),
+                "formal_charge": Chem.GetFormalCharge(mol),
                 "molecular_weight": round(Descriptors.MolWt(mol), 2),
-                "log_p": log_p_val,
-                "h_bond_donors": hbd_val,
-                "h_bond_acceptors": hba_val,
-                "tpsa": tpsa_val,
-                "rotatable_bonds": rot_bonds,
+                "log_p": round(Descriptors.MolLogP(mol), 2),
+                "h_bond_donors": Descriptors.NumHDonors(mol),
+                "h_bond_acceptors": Descriptors.NumHAcceptors(mol),
+                "tpsa": round(Descriptors.TPSA(mol), 2),
+                "rotatable_bonds": Descriptors.NumRotatableBonds(mol),
                 "parsing_status": "Success"
             }
         except Exception as e:
             return {"error": f"Critical error during molecular property calculation: {str(e)}"}
 
 class CalculateDrugLikenessTool(BaseTool):
-    """
-    Evaluates a molecule against Lipinski's Rule of 5 and Veber's Rules,
-    and calculates the QED score and ESOL solubility for a modern pharma audit.
-    """
     @property
     def name(self) -> str:
         return "calculate_drug_likeness"
@@ -154,7 +171,7 @@ class CalculateDrugLikenessTool(BaseTool):
     def description(self) -> str:
         return (
             "Performs a comprehensive drug-likeness audit including Lipinski/Veber rules, "
-            "QED score (0-1), and logS (aqueous solubility) estimation."
+            "QED score (0-1), and logS (aqueous solubility) estimation from SMILES or molecule name."
         )
 
     @property
@@ -162,9 +179,10 @@ class CalculateDrugLikenessTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                "molecule_name": {"type": "string", "description": "Optional common/trade name if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
     def _calculate_esol(self, mol) -> float:
@@ -183,12 +201,16 @@ class CalculateDrugLikenessTool(BaseTool):
         logs = 0.16 - (0.63 * logp) - (0.0062 * mw) + (0.066 * rot_bonds) - (0.74 * ap)
         return round(logs, 2)
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid structure: {smiles_valid}"}
 
             mw = Descriptors.MolWt(mol)
             logp = Descriptors.MolLogP(mol)
@@ -197,7 +219,6 @@ class CalculateDrugLikenessTool(BaseTool):
             rot_bonds = Descriptors.NumRotatableBonds(mol)
             tpsa = Descriptors.TPSA(mol)
 
-            # 1. Lipinski criteria
             lipinski = {
                 "mw_check": {"value": round(mw, 2), "limit": 500, "pass": mw < 500},
                 "logp_check": {"value": round(logp, 2), "limit": 5, "pass": logp < 5},
@@ -205,27 +226,22 @@ class CalculateDrugLikenessTool(BaseTool):
                 "hba_check": {"value": hba, "limit": 10, "pass": hba <= 10}
             }
             
-            # 2. Veber criteria
             veber = {
                 "rotatable_bonds_check": {"value": rot_bonds, "limit": 10, "pass": rot_bonds <= 10},
                 "tpsa_check": {"value": round(tpsa, 2), "limit": 140, "pass": tpsa <= 140}
             }
 
-            # 3. Modern Metrics: QED and logS
             qed_val = round(QED.qed(mol), 3)
             logs_val = self._calculate_esol(mol)
-            
-            # Solubility in mg/L: 10^logS * MW * 1000
             solubility_mg_l = round((10**logs_val) * mw * 1000, 1)
 
             lipinski_violations = sum(1 for v in lipinski.values() if not v["pass"])
             veber_violations = sum(1 for v in veber.values() if not v["pass"])
 
-            # Overall assessment
             is_drug_like = lipinski_violations <= 1 and veber_violations == 0 and qed_val > 0.5
             
             return {
-                "smiles": smiles,
+                "smiles": smiles_valid,
                 "lipinski_rule_of_five": lipinski,
                 "veber_rules": veber,
                 "modern_metrics": {
@@ -533,7 +549,7 @@ class CalculateMolecularSimilarityTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Calculates the structural Tanimoto similarity score between two molecules."
+        return "Calculates the structural Tanimoto similarity score between two molecules using SMILES strings or molecule names."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -541,20 +557,35 @@ class CalculateMolecularSimilarityTool(BaseTool):
             "type": "object",
             "properties": {
                 "smiles1": {"type": "string", "description": "SMILES of the first molecule."},
-                "smiles2": {"type": "string", "description": "SMILES of the second molecule."}
+                "smiles2": {"type": "string", "description": "SMILES of the second molecule."},
+                "molecule_name1": {"type": "string", "description": "Optional name of the first molecule."},
+                "molecule_name2": {"type": "string", "description": "Optional name of the second molecule."}
             },
-            "required": ["smiles1", "smiles2"]
+            "required": []
         }
 
-    def execute(self, smiles1: str, smiles2: str) -> Dict[str, Any]:
-        """Computes the structural Tanimoto similarity between two molecules (radius=2, ECFP4)."""
+    def execute(
+        self, 
+        smiles1: Optional[str] = None, 
+        smiles2: Optional[str] = None,
+        molecule_name1: Optional[str] = None,
+        molecule_name2: Optional[str] = None
+    ) -> Dict[str, Any]:
+        s1_valid, err1 = _resolve_smiles_or_name(smiles1, molecule_name1)
+        if err1:
+            return err1
+
+        s2_valid, err2 = _resolve_smiles_or_name(smiles2, molecule_name2)
+        if err2:
+            return err2
+
         try:
             with rdBase.BlockLogs():
-                mol1 = Chem.MolFromSmiles(smiles1)
-                mol2 = Chem.MolFromSmiles(smiles2)
+                mol1 = Chem.MolFromSmiles(s1_valid)
+                mol2 = Chem.MolFromSmiles(s2_valid)
             
             if mol1 is None or mol2 is None:
-                return {"error": f"Invalid SMILES provided. smiles1: {smiles1}, smiles2: {smiles2}"}
+                return {"error": f"Invalid SMILES provided. smiles1: {s1_valid}, smiles2: {s2_valid}"}
             
             morgan_generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
             fp1 = morgan_generator.GetFingerprint(mol1)
@@ -563,8 +594,8 @@ class CalculateMolecularSimilarityTool(BaseTool):
             similarity_score = DataStructs.TanimotoSimilarity(fp1, fp2)
             
             return {
-                "smiles1": smiles1,
-                "smiles2": smiles2,
+                "smiles1": s1_valid,
+                "smiles2": s2_valid,
                 "tanimoto_similarity": round(float(similarity_score), 4),
                 "similarity_percentage": f"{round(float(similarity_score) * 100, 2)}%"
             }
@@ -1208,28 +1239,32 @@ class DetectFunctionalGroupsTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Scans a molecule's SMILES string for basic functional groups like Alcohols, Carboxylic Acids, Amines, and Halogens using standard SMARTS patterns."
+        return "Scans a molecule's SMILES string or name for basic functional groups like Alcohols, Carboxylic Acids, Amines, and Halogens."
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
         """Detects presence and counts of basic functional groups using pre-compiled SMARTS matching."""
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES pattern: {smiles}"}
+                return {"error": f"Invalid structure: {smiles_valid}"}
             
             detected_groups = {}
-            # Use pre-compiled RDKit objects from class level for better performance
             for group_name, patt in self._FG_PATTERNS.items():
                 if patt is None:
                     continue
@@ -1240,7 +1275,7 @@ class DetectFunctionalGroupsTool(BaseTool):
                 }
                 
             return {
-                "smiles": smiles,
+                "smiles": smiles_valid,
                 "functional_groups": detected_groups,
                 "status": "success"
             }

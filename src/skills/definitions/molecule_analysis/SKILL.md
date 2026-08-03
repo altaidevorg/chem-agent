@@ -14,6 +14,10 @@ required_tools:
   - calculate_molecular_similarity
   - search_substructure
   - interpret_smarts_pattern
+  - convert_smiles_to_inchi
+  - count_heavy_atoms_and_rings
+  - estimate_pka_and_logd
+  - estimate_volatility_and_note
 ---
 
 # Molecule Analysis Skill
