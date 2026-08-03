@@ -40,6 +40,7 @@ class AgentMemory:
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.messages: List[Dict[str, str]] = []
         self.entities: Dict[str, Dict[str, Any]] = {}  # Track molecules by name/smiles
+        self.active_tools: List[str] = [] # Track discovered tool names for this session
         self.summary: Optional[str] = None # Stores the condensed conversation summary
         self.metadata: Dict[str, Any] = {
             "start_time": datetime.now().isoformat(),
@@ -52,29 +53,26 @@ class AgentMemory:
         return len(self._tokenizer.encode(text))
 
     def get_total_tokens(self, system_prompt: str) -> int:
-        """ Calculates the total tokens, including messages and tool definitions overhead. """
-        # Estimating tool overhead: 25+ tools * ~120 tokens each ≈ 3000 tokens
-        tool_overhead = 3000
+        """Calculates the total tokens, including messages and dynamic tool overhead."""
+        # Dynamic tool overhead: Active scoped tools + mandatory tools
+        num_active_tools = len(self.active_tools) + 2
+        tool_overhead = num_active_tools * 120
+        
         total = self.count_tokens(system_prompt) + tool_overhead
         for msg in self.messages:
-            # Count content
             content = msg.get("content") or ""
             total += self.count_tokens(content)
             
-            # Count tool calls if present (assistant role)
             if "tool_calls" in msg and msg["tool_calls"]:
                 for tc in msg["tool_calls"]:
-                    # Handle both dict and object types for tool calls
                     if isinstance(tc, dict):
                         total += self.count_tokens(json.dumps(tc))
                     else:
-                        # Fallback for objects (like from OpenAI SDK)
                         try:
                             total += self.count_tokens(str(tc))
-                        except:
+                        except Exception:
                             pass
             
-            # Count tool metadata (tool role)
             if msg.get("role") == "tool":
                 total += self.count_tokens(msg.get("tool_call_id", ""))
                 total += self.count_tokens(msg.get("name", ""))
@@ -209,9 +207,14 @@ class AgentMemory:
                     else:
                         self.summary = new_summary
                         
-                    # Replace summarized messages with the summary marker
+                    # Replace summarized messages with the summary marker using user role for API safety
+                    summary_guard = (
+                        "[SYSTEM_SUMMARY_NOTE: The following is an internal archived memory. "
+                        "DO NOT quote, repeat, or format this summary in your visible response to the user.]"
+                    )
                     self.messages = [
-                        {"role": "system", "content": f"[CONVERSATION SUMMARY]: {self.summary}"}
+                        {"role": "user", "content": f"{summary_guard}\n\n[CONVERSATION SUMMARY]:\n{self.summary}"},
+                        {"role": "assistant", "content": "Understood. I have absorbed the archived summary and will rely on it for context without repeating it."}
                     ] + keep_verbatim
                     
                     agent._write_telemetry("memory_compaction_success", {
@@ -289,6 +292,7 @@ class AgentMemory:
         data = {
             "metadata": self.metadata,
             "entities": self.entities,
+            "active_tools": self.active_tools,
             "messages": self.messages
         }
         with open(filepath, "w", encoding="utf-8") as f:

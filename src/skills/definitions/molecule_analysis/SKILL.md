@@ -1,6 +1,19 @@
 ---
 name: molecule_analysis
 description: Perform comprehensive structural and physicochemical analysis of chemical compounds using RDKit.
+required_tools:
+  - resolve_name_to_smiles
+  - calculate_molecular_properties
+  - calculate_all_descriptors
+  - fetch_chemical_safety_data
+  - check_regulatory_compliance
+  - detect_functional_groups
+  - generate_molecule_image
+  - calculate_drug_likeness
+  - standardize_molecule
+  - calculate_molecular_similarity
+  - search_substructure
+  - interpret_smarts_pattern
 ---
 
 # Molecule Analysis Skill

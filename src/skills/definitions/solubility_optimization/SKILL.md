@@ -1,6 +1,14 @@
 ---
 name: solubility_optimization
 description: Optimize solvent selection and formulation stability using Hansen Solubility Parameters (HSP) and HLB.
+required_tools:
+  - calculate_hansen_parameters
+  - calculate_emulsion_properties
+  - calculate_molecular_similarity
+  - estimate_volatility_and_note
+  - detect_functional_groups
+  - fetch_chemical_safety_data
+  - check_regulatory_compliance
 ---
 
 # Solubility & Formulation Optimization Skill

@@ -1,6 +1,13 @@
 ---
 name: industrial_data_analytics
 description: Advanced multi-step strategy for analyzing large industrial datasets using DuckDB and Pandas. Use this for complex root cause analysis, correlation studies, and processing files too large for standard reading.
+required_tools:
+  - search_columns
+  - inspect_dataset
+  - profile_dataset_health
+  - query_dataset
+  - analyze_dataset
+  - analyze_spc
 ---
 
 # 🏭 Industrial Data Analytics Skill

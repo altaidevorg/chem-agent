@@ -1,6 +1,11 @@
 ---
 name: regulatory_screening
 description: Specialized workflows for checking flavor and fragrance ingredients against IFRA and EU food regulations.
+required_tools:
+  - check_regulatory_compliance
+  - resolve_name_to_smiles
+  - list_files
+  - read_file
 ---
 
 # ⚖️ Regulatory Screening Skill

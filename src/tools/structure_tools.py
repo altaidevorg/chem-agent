@@ -102,12 +102,16 @@ class StandardizeMoleculeTool(BaseTool):
 
             standardized_smiles = Chem.MolToSmiles(current_mol, canonical=True)
             final_mw = Descriptors.MolWt(current_mol)
+            inchi = Chem.MolToInchi(current_mol)
+            inchikey = Chem.MolToInchiKey(current_mol)
 
             return {
                 "status": "success",
                 "is_valid": True,
                 "original_smiles": original_smiles,
                 "standardized_smiles": standardized_smiles,
+                "inchi": inchi,
+                "inchikey": inchikey,
                 "original_mw": round(original_mw, 2),
                 "final_mw": round(final_mw, 2),
                 "mw_difference": round(original_mw - final_mw, 2),

@@ -21,7 +21,8 @@ from src.agent.prompts import SYSTEM_PROMPT
 from src.agent.memory import AgentMemory
 from src.tools.base import ToolRegistry
 from src.skills.registry import SkillRegistry
-from src.tools.skill_tools import LoadSkillTool
+from src.skills.router import SkillRouter
+from src.tools.skill_tools import LoadSkillTool, InspectTool
 # Import tools to ensure they are registered
 import src.tools.rdkit_tools
 import src.tools.file_tools
@@ -46,16 +47,20 @@ class ChemistryAgent:
         self.memory = AgentMemory()
         self.session_thought_log = []
         
-        # Initialize Skill Registry
+        # Initialize Skill Registry and Router
         self.skill_registry = SkillRegistry(SKILLS_DIR)
+        self.skill_router = SkillRouter(self.skill_registry.get_skill_index())
         
         # Initialize instance-specific tools from global registry
         # This avoids shared-state anti-pattern where agents overwrite each other's tools
         self.tools = {name: tool for name, tool in ToolRegistry._tools.items()}
         
-        # Register instance-specific LoadSkillTool
-        load_skill_tool = LoadSkillTool(self.skill_registry)
+        # Register instance-specific LoadSkillTool and InspectTool
+        load_skill_tool = LoadSkillTool(self.skill_registry, self.memory)
         self.tools[load_skill_tool.name] = load_skill_tool
+        
+        inspect_tool = InspectTool(self.memory)
+        self.tools[inspect_tool.name] = inspect_tool
         
     def _write_telemetry(self, event_type: str, data: dict):
         """Writes structured telemetry logs to a JSONL file."""
@@ -150,8 +155,21 @@ class ChemistryAgent:
         except Exception as e:
             print(f"[Logger Error] Failed to write thought log: {e}")
 
-    def _get_available_tools(self) -> List[Dict[str, Any]]:
-        """Retrieves tool definitions from the instance-specific tools."""
+    def _get_available_tools(self, selected_tool_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Retrieves tool definitions, optionally filtered by a list of names."""
+        # Always include mandatory meta-tools
+        mandatory_tools = ["load_skill_instructions", "inspect_tool"]
+        
+        if selected_tool_names:
+            # Union of scoped tools, discovered tools, and mandatory tools
+            active_set = set(selected_tool_names) | set(self.memory.active_tools) | set(mandatory_tools)
+            
+            tool_definitions = []
+            for name, tool in self.tools.items():
+                if name in active_set:
+                    tool_definitions.append(tool.get_tool_definition())
+            return tool_definitions
+        
         return [tool.get_tool_definition() for tool in self.tools.values()]
 
     def _execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,9 +199,28 @@ class ChemistryAgent:
         """Main execution loop for the agent."""
         self._write_telemetry("session_start", {"user_query": user_query})
         
-        # Inject current chemical context and available skills into the system prompt
+        # 1. Skill Routing: Select relevant skills for this query
+        print(f"[Agent] Routing query to relevant skills...")
+        selected_skill_names = self.skill_router.route(user_query)
+        if selected_skill_names:
+            print(f"[Agent] Selected skills: {', '.join(selected_skill_names)}")
+        else:
+            print(f"[Agent] No specific skills selected for this query.")
+
+        # 2. Contextual Tool Scoping: Get required tools for selected skills
+        required_tool_names = self.skill_registry.get_required_tools_for_skills(selected_skill_names)
+
+        # Use required tools if any, otherwise start with an empty list (only mandatory tools will be active)
+        scoped_tool_names = required_tool_names if required_tool_names else []
+        
+        if scoped_tool_names:
+            print(f"[Agent] Scoped tools: {', '.join(scoped_tool_names)}")
+        else:
+            print(f"[Agent] Starting with minimal baseline toolset (progressive discovery mode).")
+
+        # 3. Inject current chemical context and selected skills into the system prompt
         context_summary = self.memory.get_context_summary()
-        skills_summary = self.skill_registry.get_capabilities_summary()
+        skills_summary = self.skill_registry.get_capabilities_summary(selected_skill_names)
         current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}"
 
         # Add current user query to memory
@@ -211,7 +248,7 @@ class ChemistryAgent:
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=run_messages,
-                    tools=self._get_available_tools(),
+                    tools=self._get_available_tools(scoped_tool_names),
                     tool_choice="auto",
                     temperature=TEMPERATURE
                 )

@@ -1,6 +1,10 @@
 ---
 name: industrial_reporting
 description: Generate professional chemical analysis and industrial process reports.
+required_tools:
+  - read_file
+  - write_file
+  - list_files
 ---
 
 # Industrial Reporting Skill

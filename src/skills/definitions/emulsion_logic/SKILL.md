@@ -1,6 +1,10 @@
 ---
 name: emulsion_logic
 description: Specialized workflows for beverage and food emulsion stability, HLB calculations, and oil/water partitioning analysis.
+required_tools:
+  - calculate_emulsion_properties
+  - resolve_name_to_smiles
+  - calculate_molecular_properties
 ---
 
 # 🥤 Emulsion & Solubility Logic Skill

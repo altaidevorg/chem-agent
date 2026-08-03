@@ -1,6 +1,14 @@
 ---
 name: chemical_math
 description: Perform laboratory calculations including dilutions, stoichiometry, and unit conversions.
+required_tools:
+  - calculate_dilution
+  - calculate_stoichiometry
+  - calculate_density_conversion
+  - calculate_mixture_composition
+  - calculate_dosage
+  - calculate_voc_content
+  - resolve_name_to_smiles
 ---
 
 # Chemical Math & Lab Calculations Skill

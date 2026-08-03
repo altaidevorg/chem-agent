@@ -1,6 +1,9 @@
 ---
 name: gcms_analysis
 description: Analyze and compare GC-MS chromatography profiles to detect anomalies, contamination, or verify authenticity.
+required_tools:
+  - compare_gcms_profiles
+  - detect_gcms_anomalies
 ---
 
 # GC-MS Data Analysis Skill

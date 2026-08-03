@@ -1,6 +1,9 @@
 ---
 name: structure_standardization
 description: Standardize chemical structures from SMILES or local files (.mol, .sdf) to ensure consistency, remove salts, and find canonical tautomers.
+required_tools:
+  - standardize_molecule
+  - import_and_standardize_file
 ---
 
 # ⚗️ Structure Standardization & Validation Skill

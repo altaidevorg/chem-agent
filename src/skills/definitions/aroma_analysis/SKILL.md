@@ -1,6 +1,12 @@
 ---
 name: aroma_analysis
 description: Specialized workflows for flavor and fragrance R&D, including volatility estimation, odor note classification, and formulation support.
+required_tools:
+  - estimate_volatility_and_note
+  - resolve_name_to_smiles
+  - calculate_molecular_properties
+  - detect_functional_groups
+  - audit_chemical_compatibility
 ---
 
 # 🍎 Aroma & Fragrance Analysis Skill

@@ -4,11 +4,12 @@ import yaml
 from typing import Dict, List, Optional, Any
 
 class SkillDefinition:
-    def __init__(self, name: str, description: str, instructions: str, path: str, available: bool = True):
+    def __init__(self, name: str, description: str, instructions: str, path: str, required_tools: List[str] = None, available: bool = True):
         self.name = name
         self.description = description
         self.instructions = instructions
         self.path = path
+        self.required_tools = required_tools or []
         self.available = available
 
 class SkillRegistry:
@@ -59,21 +60,35 @@ class SkillRegistry:
                 name=metadata['name'],
                 description=metadata['description'],
                 instructions=body_str,
-                path=path
+                path=path,
+                required_tools=metadata.get('required_tools', [])
             )
         except Exception as e:
             print(f"[SkillRegistry] Error parsing {path}: {e}")
             return None
 
-    def get_capabilities_summary(self) -> str:
-        """Returns the metadata for progressive disclosure to the prompt."""
+    def get_skill_index(self) -> Dict[str, str]:
+        """Returns a mapping of skill name to its short description for routing."""
+        return {skill.name: skill.description for skill in self.skills.values() if skill.available}
+
+    def get_capabilities_summary(self, skill_names: Optional[List[str]] = None) -> str:
+        """Returns the metadata for progressive disclosure. If skill_names is provided, only those are included."""
         if not self.skills:
             return ""
 
         summary = "\n\nAvailable Agent Skills:\n"
-        for skill in self.skills.values():
-            if skill.available:
-                summary += f"- **{skill.name}**: {skill.description}\n"
+        
+        skills_to_include = []
+        if skill_names:
+            skills_to_include = [self.skills[name] for name in skill_names if name in self.skills and self.skills[name].available]
+        else:
+            skills_to_include = [skill for skill in self.skills.values() if skill.available]
+
+        if not skills_to_include:
+            return ""
+
+        for skill in skills_to_include:
+            summary += f"- **{skill.name}**: {skill.description}\n"
         
         summary += "\nTo execute a skill, use the 'load_skill_instructions' tool with the skill's name to learn how to use it contextually.\n"
         return summary
@@ -107,5 +122,15 @@ class SkillRegistry:
             "available": skill.available,
             "description": skill.description,
             "instruction_length": len(skill.instructions),
-            "path": skill.path
+            "path": skill.path,
+            "required_tools": skill.required_tools
         }
+
+    def get_required_tools_for_skills(self, skill_names: List[str]) -> List[str]:
+        """Returns a deduplicated list of required tools for the given skill names."""
+        tools = set()
+        for name in skill_names:
+            skill = self.skills.get(name)
+            if skill:
+                tools.update(skill.required_tools)
+        return list(tools)

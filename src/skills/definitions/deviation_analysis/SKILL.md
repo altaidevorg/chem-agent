@@ -1,6 +1,10 @@
 ---
 name: deviation_analysis
 description: Standard procedure for automated root-cause analysis of production deviations and quality failures.
+required_tools:
+  - analyze_deviation
+  - inspect_dataset
+  - query_dataset
 ---
 
 # 🕵️ Deviation & Root-Cause Analysis Skill

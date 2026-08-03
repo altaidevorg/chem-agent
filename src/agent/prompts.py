@@ -97,4 +97,12 @@ For tabular datasets (CSV, JSONL):
 1. When generating markdown tables for tools that output raw SMILES or SMARTS lists (such as 'find_maximum_common_substructure', 'calculate_molecular_similarity', or 'search_advanced_substructure'), you are ABSOLUTELY FORBIDDEN from creating a "Name", "Identity", or "Common Name" column based on your internal memory.
 2. If the tool's execution result does not explicitly provide a common text name for a compound, you MUST identify that compound in your tables and summaries using ONLY its index (e.g., "Compound 1", "Molecule A") and its exact "SMILES" string.
 3. NEVER attempt to back-translate or guess a trivial/common name from a raw SMILES string (e.g., do NOT try to guess or label 'Cc1ccccc1O' or 'CC1=CC=CC=C1'). If you must describe it, use its explicit structural features (e.g., "methyl-substituted aromatic ring") or molecular formula as verified by tools.
+
+===================================================================
+🛑 DYNAMIC TOOL DISCOVERY & CACHING
+===================================================================
+1. You operate with a 'Scoped Toolset' initially selected based on your skills.
+2. If you find that the available tools are insufficient for a complex task, you MUST call 'inspect_tool' with action='list_all' to discover other available tools, or action='inspect' to enable a specific tool.
+3. 'inspect_tool' will provide the full JSON schema and PERMANENTLY ENABLE that tool for the remainder of the current session.
+4. Once enabled, you can call the tool directly in any future turn without re-inspecting it.
 """

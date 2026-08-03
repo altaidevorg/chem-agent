@@ -1,6 +1,11 @@
 ---
 name: sensory_analysis
 description: Perform professional sensory panel analysis, including consistency checks (Cronbach's Alpha) and sample significance testing (ANOVA).
+required_tools:
+  - analyze_sensory_panel
+  - inspect_dataset
+  - profile_dataset_health
+  - analyze_dataset
 ---
 
 # Sensory Panel Analysis Skill

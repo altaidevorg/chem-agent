@@ -1,6 +1,10 @@
 ---
 name: reactivity_audit
 description: Advanced multi-component strategy for detecting chemical incompatibilities and reactivity risks in flavor or fragrance formulations.
+required_tools:
+  - audit_chemical_compatibility
+  - check_chemical_reactivity
+  - resolve_name_to_smiles
 ---
 
 # ⚡ Chemical Reactivity & Stability Audit Skill

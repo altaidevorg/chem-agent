@@ -123,9 +123,13 @@ class CalculateMolecularPropertiesTool(BaseTool):
             hba_val = Descriptors.NumHAcceptors(mol)
             tpsa_val = round(Descriptors.TPSA(mol), 2)
             rot_bonds = Descriptors.NumRotatableBonds(mol)
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+            formal_charge = Chem.GetFormalCharge(mol)
             
             return {
                 "smiles": smiles,
+                "formula": formula,
+                "formal_charge": formal_charge,
                 "molecular_weight": round(Descriptors.MolWt(mol), 2),
                 "log_p": log_p_val,
                 "h_bond_donors": hbd_val,
@@ -706,6 +710,8 @@ class FindMaximumCommonSubstructureTool(BaseTool):
                     "items": {"type": "string"},
                     "description": "A list of SMILES strings to analyze for a common substructure."
                 },
+                "smiles1": {"type": "string", "description": "First SMILES (optional alternative to list)."},
+                "smiles2": {"type": "string", "description": "Second SMILES (optional alternative to list)."},
                 "ring_matches_ring_only": {
                     "type": "boolean",
                     "description": "If true, ring atoms in the MCS must match ring atoms in the target molecules.",
@@ -717,14 +723,22 @@ class FindMaximumCommonSubstructureTool(BaseTool):
                     "default": False
                 }
             },
-            "required": ["smiles_list"]
+            "required": []
         }
 
-    def execute(self, smiles_list: List[str], ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> Dict[str, Any]:
+    def execute(self, smiles_list: List[str] = None, smiles1: str = None, smiles2: str = None, ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> Dict[str, Any]:
         """Finds the largest common atom/bond mapping shared by multiple molecules."""
         try:
+            # Flexible parameter adapter
+            if smiles_list is None:
+                smiles_list = []
+            if smiles1:
+                smiles_list.append(smiles1)
+            if smiles2:
+                smiles_list.append(smiles2)
+
             if not smiles_list or len(smiles_list) < 2:
-                return {"error": "At least two SMILES strings are required to find a common substructure."}
+                return {"error": "At least two SMILES strings are required to find a common substructure. Provide 'smiles_list' or 'smiles1' and 'smiles2'."}
 
             mols = []
             with rdBase.BlockLogs():
@@ -980,8 +994,21 @@ class CalculateAllDescriptorsTool(BaseTool):
             if mol is None:
                 return {"error": f"Invalid SMILES: {smiles}"}
 
+            # Define critical descriptors to avoid context bloat
+            critical_descriptors = {
+                "MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors", 
+                "NumRotatableBonds", "NumValenceElectrons", "FractionCSP3", 
+                "NumAromaticRings", "NumSaturatedRings", "NumAliphaticRings", 
+                "RingCount", "HeavyAtomCount", "NumHeteroatoms", "LabuteASA", 
+                "MaxAbsPartialCharge", "MaxPartialCharge", "MinAbsPartialCharge", 
+                "MinPartialCharge", "HallKierAlpha", "qed", "BertzCT", 
+                "BalabanJ", "Kappa1", "Kappa2", "Kappa3", "Chi0", "Chi1"
+            }
+
             results = {}
             for name, func in Descriptors._descList:
+                if name not in critical_descriptors:
+                    continue
                 try:
                     val = func(mol)
                     # Round floats for cleanliness, keep ints as is
@@ -994,6 +1021,7 @@ class CalculateAllDescriptorsTool(BaseTool):
 
             return {
                 "smiles": smiles,
+                "formula": rdMolDescriptors.CalcMolFormula(mol),
                 "descriptor_count": len(results),
                 "descriptors": results,
                 "status": "success"
@@ -2019,7 +2047,7 @@ class FindIngredientReplacementTool(BaseTool):
             fp_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
             target_fp = fp_gen.GetFingerprint(target_mol)
             
-    # 2. Query Candidates from DB
+            # 2. Query Candidates from DB
             with db.get_connection(read_only=True) as conn:
                 target_ikey = standardizer.get_inchikey(target_smiles)
                 
@@ -2032,7 +2060,6 @@ class FindIngredientReplacementTool(BaseTool):
                 candidates_df = conn.execute(query).df()
                 
                 # 3. Filter by Regulatory Status (if requested)
-                # ... (rest of the regulatory filter code remains same)
                 if regulatory_category:
                     if regulatory_category == 'EU':
                         banned = conn.execute("SELECT inchikey FROM eu_flavorings WHERE status = 'Banned' OR status = 'Prohibited'").df()['inchikey'].tolist()

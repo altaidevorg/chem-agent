@@ -1,6 +1,9 @@
 ---
 name: doe_optimization
 description: Design and analyze experimental trials (DoE) to optimize formulations and processes using statistical modeling.
+required_tools:
+  - analyze_doe_results
+  - query_dataset
 ---
 
 # Design of Experiments (DoE) & Optimization

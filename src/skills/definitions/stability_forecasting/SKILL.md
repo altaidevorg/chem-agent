@@ -1,6 +1,9 @@
 ---
 name: stability_forecasting
 description: Predict product shelf life and degradation kinetics using Arrhenius modeling.
+required_tools:
+  - predict_shelf_life_arrhenius
+  - analyze_dataset
 ---
 
 # Stability & Shelf Life Forecasting Skill
