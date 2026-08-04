@@ -2,7 +2,7 @@
 import os
 from typing import Any, Dict, List, Optional
 from rdkit import Chem
-from rdkit.Chem import rdBase, Descriptors
+from rdkit.Chem import rdBase, Descriptors, rdMolDescriptors
 from rdkit.Chem.MolStandardize import rdMolStandardize
 from src.tools.base import BaseTool, ToolRegistry
 
@@ -20,8 +20,9 @@ class StandardizeMoleculeTool(BaseTool):
     def description(self) -> str:
         return (
             "Standardizes chemical structures and validates SMILES. Removes salts/solvents, "
-            "neutralizes charges, and finds the canonical tautomer. Essential for duplicate "
-            "detection, validation, and accurate physicochemical property estimation."
+            "neutralizes charges, and finds the canonical tautomer. Returns standardized SMILES, "
+            "InChI, InChIKey, formula, formal charge, and MW difference in a single call. "
+            "No need to call other formula or InChI tools alongside this."
         )
 
     @property
@@ -105,11 +106,17 @@ class StandardizeMoleculeTool(BaseTool):
             inchi = Chem.MolToInchi(current_mol)
             inchikey = Chem.MolToInchiKey(current_mol)
 
+            # Calculate formula and formal charge
+            formula = rdMolDescriptors.CalcMolFormula(current_mol)
+            formal_charge = Chem.GetFormalCharge(current_mol)
+
             return {
                 "status": "success",
                 "is_valid": True,
                 "original_smiles": original_smiles,
                 "standardized_smiles": standardized_smiles,
+                "formula": formula,
+                "formal_charge": formal_charge,
                 "inchi": inchi,
                 "inchikey": inchikey,
                 "original_mw": round(original_mw, 2),

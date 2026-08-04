@@ -51,7 +51,11 @@ def _filters_to_where(filters: Optional[Dict[str, Any]]) -> str:
     clauses = []
     for column, value in filters.items():
         col_ref = sql_column_reference(column)
-        if isinstance(value, str):
+        if isinstance(value, list):
+            # FIX: Support list values using SQL 'IN (...)' syntax
+            escaped_vals = [f"'{str(v).replace('\'', '\'\'')}'" for v in value]
+            clauses.append(f'{col_ref} IN ({", ".join(escaped_vals)})')
+        elif isinstance(value, str):
             escaped = value.replace("'", "''")
             clauses.append(f"{col_ref} = '{escaped}'")
         elif isinstance(value, bool):
@@ -1228,7 +1232,12 @@ class AnalyzeDatasetTool(BaseTool):
         columns: List[str],
         group_by: Optional[str],
         where_body: str,
+        target_column: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # Fallback for models that provide target_column instead of columns
+        if not columns and target_column:
+            columns = [target_column]
+
         df = self._load_dataframe(file_path, where_body)
         
         if group_by:
@@ -1240,7 +1249,7 @@ class AnalyzeDatasetTool(BaseTool):
             if validation_error: return validation_error
 
             numeric_col = columns[0]
-            groups = df[group_by].unique()
+            groups = df[group_by].dropna().unique()
             
             if len(groups) != 2:
                 return {
@@ -1360,6 +1369,16 @@ class AnalyzeDatasetTool(BaseTool):
             return {"error": f"File not found at path: {file_path}", "status": "fail"}
 
         columns = columns or []
+        
+        # FIX: Clean quotes from all column-representing strings to prevent Pandas lookup errors
+        columns = [c.strip("'\"") for c in columns]
+        if group_by: group_by = group_by.strip("'\"")
+        if target_column: target_column = target_column.strip("'\"")
+        if predictor_columns: predictor_columns = [c.strip("'\"") for c in predictor_columns]
+        if numerator: numerator = numerator.strip("'\"")
+        if denominator: denominator = denominator.strip("'\"")
+        if timestamp_column: timestamp_column = timestamp_column.strip("'\"")
+
         where_body = _merge_where_clauses(where_clause, filters)
 
         try:
@@ -1424,7 +1443,7 @@ class AnalyzeDatasetTool(BaseTool):
                 )
             elif analysis_type == "t_test":
                 res = self._run_t_test(
-                    file_path, columns, group_by, where_body
+                    file_path, columns, group_by, where_body, target_column
                 )
             elif analysis_type == "chi_square":
                 res = self._run_chi_square(
@@ -1832,6 +1851,10 @@ class AnalyzeDeviationTool(BaseTool):
         ingredients_file: str,
         target_metric: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # FIX: Clean quotes from column names to prevent Pandas lookup errors
+        if target_metric:
+            target_metric = target_metric.strip("'\"")
+
         try:
             # 1. Load Data
             with duckdb.connect(database=":memory:") as con:
@@ -2001,6 +2024,11 @@ class AnalyzeSPCTool(BaseTool):
         target_column: str,
         timestamp_column: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # FIX: Clean quotes from column names to prevent Pandas lookup errors
+        target_column = target_column.strip("'\"")
+        if timestamp_column:
+            timestamp_column = timestamp_column.strip("'\"")
+
         try:
             # 1. Load and Sort Data
             with duckdb.connect(database=":memory:") as con:
