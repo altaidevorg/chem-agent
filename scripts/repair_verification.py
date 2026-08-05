@@ -2,7 +2,8 @@
 import sys
 import os
 from rdkit import Chem
-from src.tools.rdkit_tools import EstimateVolatilityAndNoteTool, CheckRegulatoryComplianceTool
+from src.tools.rdkit_tools import EstimateVolatilityAndNoteTool
+from src.tools.regulatory_tools import CheckRegulatoryComplianceTool
 from src.tools.chem_math_tools import CalculateVocContentTool
 
 def test_repairs():

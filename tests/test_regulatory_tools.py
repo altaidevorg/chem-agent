@@ -1,7 +1,7 @@
 # tests/test_regulatory_tools.py
 import pytest
 import os
-from src.tools.rdkit_tools import CheckRegulatoryComplianceTool
+from src.tools.regulatory_tools import CheckRegulatoryComplianceTool
 
 def test_check_regulatory_compliance_seed_data():
     tool = CheckRegulatoryComplianceTool()

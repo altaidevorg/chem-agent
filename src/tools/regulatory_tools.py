@@ -3,10 +3,175 @@ import os
 import duckdb
 import pandas as pd
 from typing import Any, Dict, List, Optional
+from rdkit import Chem
+from rdkit.Chem import rdBase
 from src.tools.base import BaseTool, ToolRegistry
 from src.database.manager import DatabaseManager
 from src.database.standardizer import ChemicalStandardizer
 from src.database.fetchers import DGSanteFetcher, IFRAFetcher
+
+class CheckRegulatoryComplianceTool(BaseTool):
+    """
+    Checks a list of chemicals against the unified knowledge database 
+    (IFRA and EU 1334/2008) for restrictions or bans.
+    """
+
+    @property
+    def name(self) -> str:
+        return "check_regulatory_compliance"
+
+    @property
+    def description(self) -> str:
+        return "Checks formulation components against IFRA (Fragrance) and EU 1334/2008 (Food) regulations using the knowledge database. Essential for legal safety audits."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "A list of common names, chemical names, or CAS numbers to check."
+                }
+            },
+            "required": ["queries"]
+        }
+
+    def execute(self, queries: List[str], **kwargs) -> Dict[str, Any]:
+        """
+        Checks a list of names or CAS numbers against regulatory data.
+        Uses InChIKey-based resolution and JOIN queries for high accuracy.
+        """
+        try:
+            from src.database.manager import DatabaseManager
+            from src.database.standardizer import ChemicalStandardizer
+            
+            db = DatabaseManager()
+            standardizer = ChemicalStandardizer()
+            
+            with db.get_connection(read_only=True) as conn:
+                # 1. Load structural restrictions once
+                structural_rules = conn.execute("SELECT * FROM structural_restrictions").df().to_dict('records')
+                structural_patterns = []
+                for r in structural_rules:
+                    patt = Chem.MolFromSmarts(r['smarts_pattern'])
+                    if patt:
+                        structural_patterns.append({"pattern": patt, "metadata": r})
+
+                results = []
+                
+                for query in queries:
+                    # Identifier Resolution Strategy
+                    ikey = None
+                    smiles = None
+                    resolved_name = query
+                    
+                    # A. Check if query is already SMILES
+                    if "[" in query or "=" in query or "(" in query:
+                        ikey = standardizer.get_inchikey(query)
+                        smiles = query
+                    
+                    # B. Check if query is CAS
+                    is_cas = "-" in query and any(char.isdigit() for char in query)
+                    cas_clean = standardizer.clean_cas(query) if is_cas else None
+                    
+                    # C. Database Lookup (Cross-Reference)
+                    if ikey:
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE inchikey = ?", [ikey]
+                        ).df()
+                    elif is_cas:
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE cas_no_clean = ?", [cas_clean]
+                        ).df()
+                    else:
+                        # Search by name
+                        xref_data = conn.execute(
+                            "SELECT * FROM compound_cross_reference WHERE chemical_name ILIKE ?", [f"%{query}%"]
+                        ).df()
+                    
+                    if not xref_data.empty:
+                        ikey = xref_data.iloc[0]['inchikey']
+                        smiles = xref_data.iloc[0]['smiles']
+                        resolved_name = xref_data.iloc[0]['chemical_name']
+                    
+                    # 2. Regulatory JOIN Queries
+                    ifra_res = pd.DataFrame()
+                    eu_res = pd.DataFrame()
+                    
+                    if ikey:
+                        # IFRA JOIN
+                        ifra_res = conn.execute("""
+                            SELECT i.*, x.chemical_name, x.cas_no 
+                            FROM ifra_standards i
+                            JOIN compound_cross_reference x ON i.inchikey = x.inchikey
+                            WHERE i.inchikey = ?
+                        """, [ikey]).df()
+                        
+                        # EU JOIN
+                        eu_res = conn.execute("""
+                            SELECT e.*, x.chemical_name, x.cas_no 
+                            FROM eu_flavorings e
+                            JOIN compound_cross_reference x ON e.inchikey = x.inchikey
+                            WHERE e.inchikey = ?
+                        """, [ikey]).df()
+                    elif is_cas:
+                        # Fallback for CAS only (if InChIKey not in DB)
+                        eu_res = conn.execute("SELECT * FROM eu_flavorings WHERE fl_no IN (SELECT fl_no FROM compound_cross_reference WHERE cas_no_clean = ?)", [cas_clean]).df()
+
+                    mol_summary = {
+                        "query": query,
+                        "resolved_name": resolved_name,
+                        "inchikey": ikey,
+                        "ifra_status": "Not Found / GRAS" if ifra_res.empty else "RESTRICTED/BANNED",
+                        "eu_status": "Not Found / GRAS" if eu_res.empty else "RESTRICTED/BANNED",
+                        "details": [],
+                        "structural_class_matches": []
+                    }
+                    
+                    # 3. Structural Screening (SMARTS)
+                    if smiles:
+                        with rdBase.BlockLogs():
+                            mol = Chem.MolFromSmiles(smiles)
+                        if mol:
+                            for item in structural_patterns:
+                                if mol.HasSubstructMatch(item["pattern"]):
+                                    mol_summary["structural_class_matches"].append({
+                                        "class": item["metadata"]["class_name"],
+                                        "severity": item["metadata"]["severity"],
+                                        "description": item["metadata"]["description"]
+                                    })
+
+                    # Populate details
+                    if not ifra_res.empty:
+                        for _, row in ifra_res.iterrows():
+                            mol_summary["details"].append({
+                                "source": "IFRA 51st Amendment",
+                                "category": row['category_code'],
+                                "limit": row['max_concentration_pct'],
+                                "type": row['restriction_type']
+                            })
+                    
+                    if not eu_res.empty:
+                        for _, row in eu_res.iterrows():
+                            mol_summary["details"].append({
+                                "source": "EU 1334/2008",
+                                "fl_no": row['fl_no'],
+                                "status": row['status'],
+                                "restrictions": row['restrictions']
+                            })
+                    
+                    results.append(mol_summary)
+                
+                return {
+                    "total_checked": len(queries),
+                    "compliance_report": results,
+                    "status": "success",
+                    "notice": "JOIN queries on InChIKey used for maximum regulatory precision."
+                }
+        except Exception as e:
+            return {"error": f"Regulatory check failed: {str(e)}"}
 
 class UpdateRegulatoryDatabaseTool(BaseTool):
     """
@@ -162,4 +327,5 @@ class UpdateRegulatoryDatabaseTool(BaseTool):
             return {"error": f"Database update failed: {str(e)}"}
 
 # Register Tool
+ToolRegistry.register(CheckRegulatoryComplianceTool())
 ToolRegistry.register(UpdateRegulatoryDatabaseTool())

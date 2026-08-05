@@ -1,5 +1,5 @@
 # scripts/test_advanced_compliance.py
-from src.tools.rdkit_tools import CheckRegulatoryComplianceTool
+from src.tools.regulatory_tools import CheckRegulatoryComplianceTool
 from src.tools.chem_math_tools import CalculateVocContentTool
 import json
 

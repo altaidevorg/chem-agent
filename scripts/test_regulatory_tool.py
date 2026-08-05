@@ -4,7 +4,7 @@ import sys
 # Add project root to path
 sys.path.append(os.getcwd())
 
-from src.tools.rdkit_tools import CheckRegulatoryComplianceTool
+from src.tools.regulatory_tools import CheckRegulatoryComplianceTool
 
 def test_regulatory():
     tool = CheckRegulatoryComplianceTool()
