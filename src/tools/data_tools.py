@@ -1,9 +1,10 @@
 # src/tools/data_tools.py
 import json
 import os
+import re
 import duckdb
 import pandas as pd
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from src.tools.base import BaseTool, ToolRegistry
 from src.tools.schema_cache import SchemaCache, sql_column_reference
 
@@ -50,8 +51,15 @@ class InspectDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, file_path: str) -> Dict[str, Any]:
+    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Inspects the schema of a dataset using DuckDB."""
+        if workspace:
+            try:
+                real_path = workspace.resolve(file_path)
+                file_path = str(real_path)
+            except PermissionError as e:
+                return {"error": str(e), "status": "fail"}
+
         if not os.path.exists(file_path):
             return {"error": f"File not found at path: {file_path}"}
 
@@ -131,10 +139,22 @@ class QueryDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, sql_query: str, max_results: int = 50) -> Dict[str, Any]:
+    def execute(self, sql_query: str, max_results: int = 50, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Executes a SQL query on files and returns results as dictionaries."""
         # Safety Hard-Cap: Never allow more than 100 rows to context to prevent memory crashes
         effective_max = min(max_results, 100)
+        
+        # FIX: Resolve file paths inside the SQL query if workspace is provided
+        if workspace:
+            # Find all single-quoted strings that look like file paths
+            # e.g., 'data/logs.csv'
+            matches = re.findall(r"'(.*?\.(?:csv|jsonl|db))'", sql_query, re.IGNORECASE)
+            for path in matches:
+                try:
+                    real_path = workspace.resolve(path)
+                    sql_query = sql_query.replace(f"'{path}'", f"'{str(real_path)}'")
+                except PermissionError as e:
+                    return {"error": f"Workspace access denied: {str(e)}", "status": "fail"}
         
         try:
             with duckdb.connect(database=':memory:') as con:
@@ -193,8 +213,15 @@ class ProfileDatasetHealthTool(BaseTool):
             "required": ["file_path"]
         }
 
-    def execute(self, file_path: str) -> Dict[str, Any]:
+    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Performs a comprehensive data quality and health profile."""
+        if workspace:
+            try:
+                real_path = workspace.resolve(file_path)
+                file_path = str(real_path)
+            except PermissionError as e:
+                return {"error": str(e), "status": "fail"}
+
         if not os.path.exists(file_path):
             return {"error": f"File not found at path: {file_path}"}
 
@@ -290,8 +317,15 @@ class SearchColumnsTool(BaseTool):
             "required": ["pattern"]
         }
 
-    def execute(self, pattern: str, directory_path: str = "data") -> Dict[str, Any]:
+    def execute(self, pattern: str, directory_path: str = "data", workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Searches for columns matching a pattern across files."""
+        if workspace:
+            try:
+                real_path = workspace.resolve(directory_path)
+                directory_path = str(real_path)
+            except PermissionError as e:
+                return {"error": str(e), "status": "fail"}
+
         pattern = pattern.lower()
         matches = []
         

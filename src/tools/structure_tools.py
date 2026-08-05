@@ -55,7 +55,8 @@ class StandardizeMoleculeTool(BaseTool):
         smiles: str, 
         remove_salts: bool = True, 
         neutralize: bool = True, 
-        canonicalize_tautomer: bool = True
+        canonicalize_tautomer: bool = True,
+        **kwargs
     ) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
@@ -182,8 +183,17 @@ class ImportAndStandardizeFileTool(BaseTool):
         remove_salts: bool = True,
         neutralize: bool = True,
         canonicalize_tautomer: bool = True,
+        workspace: Optional[Any] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         try:
+            if workspace:
+                try:
+                    real_path = workspace.resolve(file_path)
+                    file_path = str(real_path)
+                except PermissionError as e:
+                    return {"error": str(e)}
+
             if not os.path.exists(file_path):
                 return {"error": f"File not found: {file_path}"}
 

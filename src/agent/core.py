@@ -16,13 +16,14 @@ def safe_json_dumps(obj, **kwargs):
     return json.dumps(obj, cls=CustomEncoder, ensure_ascii=False, **kwargs)
 
 from src.vllm_client import get_vllm_client
-from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR, MAX_OUTPUT_TOKENS, MAX_CONTEXT_TOKENS
+from src.config import MODEL_NAME, MAX_ITERATIONS, TEMPERATURE, TELEMETRY_LOG_FILE, THOUGHT_LOGS_DIR, SKILLS_DIR, MAX_OUTPUT_TOKENS, MAX_CONTEXT_TOKENS, DEFAULT_WORKSPACE_DIR
 from src.agent.prompts import SYSTEM_PROMPT
 from src.agent.memory import AgentMemory
+from src.agent.workspace import WorkspaceManager
 from src.tools.base import ToolRegistry
 from src.skills.registry import SkillRegistry
 from src.skills.router import SkillRouter
-from src.tools.skill_tools import LoadSkillTool, InspectTool
+from src.tools.skill_tools import LoadSkillTool, InspectTool, SetWorkspaceTool
 # Import tools to ensure they are registered
 import src.tools.rdkit_tools
 import src.tools.file_tools
@@ -45,6 +46,7 @@ class ChemistryAgent:
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.memory = AgentMemory()
+        self.workspace = WorkspaceManager(default_workspace=DEFAULT_WORKSPACE_DIR)
         self.session_thought_log = []
         
         # Initialize Skill Registry and Router
@@ -61,6 +63,9 @@ class ChemistryAgent:
         
         inspect_tool = InspectTool(self.memory)
         self.tools[inspect_tool.name] = inspect_tool
+        
+        set_workspace_tool = SetWorkspaceTool()
+        self.tools[set_workspace_tool.name] = set_workspace_tool
         
     def _write_telemetry(self, event_type: str, data: dict):
         """Writes structured telemetry logs to a JSONL file."""
@@ -156,21 +161,35 @@ class ChemistryAgent:
             print(f"[Logger Error] Failed to write thought log: {e}")
 
     def _get_available_tools(self, selected_tool_names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Retrieves tool definitions, optionally filtered by a list of names."""
-        # Always include mandatory meta-tools
-        mandatory_tools = ["load_skill_instructions", "inspect_tool"]
+        """
+        PROGRESSIVE DISCOVERY ENGINE:
+        Returns full JSON schemas ONLY for essential meta-tools and the last N inspected tools.
+        Keeps API prompt schema overhead under 600 tokens at all times.
+        """
+        # Always available core meta-tools
+        mandatory_meta_tools = ["load_skill_instructions", "inspect_tool"]
         
-        if selected_tool_names:
-            # Union of scoped tools, discovered tools, and mandatory tools
-            active_set = set(selected_tool_names) | set(self.memory.active_tools) | set(mandatory_tools)
-            
-            tool_definitions = []
-            for name, tool in self.tools.items():
-                if name in active_set:
-                    tool_definitions.append(tool.get_tool_definition())
-            return tool_definitions
+        # Keep only the last 3 dynamically inspected/active tools (LRU Window)
+        recent_active_tools = self.memory.active_tools[-3:] if self.memory else []
         
-        return [tool.get_tool_definition() for tool in self.tools.values()]
+        active_set = set(mandatory_meta_tools) | set(recent_active_tools)
+        
+        tool_definitions = []
+        for name, tool in self.tools.items():
+            if name in active_set:
+                tool_definitions.append(tool.get_tool_definition())
+                
+        return tool_definitions
+
+    def _get_tool_index_text(self) -> str:
+        """Returns a lightweight text-based index of all available tools for the system prompt."""
+        header = "Available System Tools (Use 'inspect_tool' to get full parameters and enable a tool):\n"
+        lines = []
+        for name, tool in sorted(self.tools.items()):
+            # Truncate description for brevity
+            desc = tool.description.split('.')[0] # Take first sentence
+            lines.append(f"- {name}: {desc}.")
+        return header + "\n".join(lines)
 
     def _execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Executes a tool by name using instance-specific tools and updates memory."""
@@ -180,7 +199,8 @@ class ChemistryAgent:
         
         start_time = datetime.now()
         try:
-            result = tool.execute(**arguments)
+            # Pass workspace to tools that support it (via kwargs)
+            result = tool.execute(workspace=self.workspace, **arguments)
             end_time = datetime.now()
             execution_time_ms = (end_time - start_time).total_seconds() * 1000
             
@@ -196,7 +216,7 @@ class ChemistryAgent:
             return {"error": f"Execution error in tool '{name}': {str(e)}"}
 
     def run(self, user_query: str) -> str:
-        """Main execution loop for the agent with async compaction support."""
+        """Main execution loop for the agent with truncation protection and auto-continuation."""
         self._write_telemetry("session_start", {"user_query": user_query})
         
         # 0. Ensure any running background compaction finishes before proceeding
@@ -224,15 +244,29 @@ class ChemistryAgent:
         else:
             print(f"[Agent] Starting with minimal baseline toolset (progressive discovery mode).")
 
-        # 4. Inject current chemical context and selected skills into the system prompt
+        # 4. Inject current chemical context, selected skills, tool index, and workspace info into the system prompt
         context_summary = self.memory.get_context_summary()
         skills_summary = self.skill_registry.get_capabilities_summary(selected_skill_names)
-        current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}"
+        tool_index = self._get_tool_index_text()
+        
+        # Workspace Context Injection
+        workspace_files = self.workspace.list_files()
+        workspace_info = f"[ACTIVE WORKSPACE INFO]\nCurrent Workspace Root: {self.workspace.root_path}\n"
+        workspace_info += "All file operations must be relative to this workspace.\n"
+        workspace_info += "Available files in workspace:\n"
+        for f in workspace_files[:30]: # Limit to first 30 files for brevity
+            workspace_info += f"- {f}\n"
+        if len(workspace_files) > 30:
+            workspace_info += f"... and {len(workspace_files) - 30} more files.\n"
+
+        current_system_prompt = f"{SYSTEM_PROMPT}\n\n{context_summary}\n\n{skills_summary}\n\n{workspace_info}\n\n{tool_index}"
 
         # Add current user query to memory
         self.memory.add_message("user", user_query)
         
         iteration = 0
+        accumulated_final_response = "" # Accumulator for merging truncated responses
+
         while iteration < self.max_iterations:
             iteration += 1
             
@@ -240,7 +274,7 @@ class ChemistryAgent:
             with self.memory._lock:
                 run_messages = [{"role": "system", "content": current_system_prompt}] + list(self.memory.messages)
 
-            # --- DYNAMIC TOKEN BUDGETING & EARLY COMPACTION GUARD ---
+            # --- DYNAMIC TOKEN BUDGETING & PROACTIVE OUTPUT RESERVATION ---
             # 1. Realistic input token calculation
             available_tools = self._get_available_tools(scoped_tool_names)
             tool_tokens = self.memory.count_tokens(safe_json_dumps(available_tools)) if available_tools else 0
@@ -258,36 +292,32 @@ class ChemistryAgent:
             
             total_input_tokens = system_prompt_tokens + messages_tokens + tool_tokens + chat_template_overhead
             
-            # 2. Dynamic safety margin (min 500 or 5% of input)
-            safety_margin = max(500, int(total_input_tokens * 0.05))
+            # 2. Dynamic safety margin (min 400 or 4% of input)
+            safety_margin = max(400, int(total_input_tokens * 0.04))
             
-            # Use the global MAX_CONTEXT_TOKENS from config
-            available_output_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
+            # Calculate absolute maximum allowed output space without exceeding context wall
+            absolute_remaining_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
             
-            # 3. Early Intervention: Trigger sync compaction if output space is critically low
-            if available_output_space < 1500:
-                print(f"[Agent Warning] Context space tight ({available_output_space} tokens left). Triggering immediate compaction...")
+            # 3. PROACTIVE OUTPUT RESERVATION:
+            # Guarantee at least 2048 tokens of OUTPUT SPACE for the model!
+            # If remaining space is less than 2048, force compaction BEFORE going to API.
+            MIN_OUTPUT_BUFFER = 2048
+            if absolute_remaining_space < MIN_OUTPUT_BUFFER:
+                print(f"[Agent Warning] Output space constrained ({absolute_remaining_space} tokens left). Triggering proactive compaction...")
                 self.memory.check_and_compact(self, current_system_prompt, force=True)
                 
-                # Re-calculate after sync compaction
+                # Re-calculate messages after sync compaction
                 with self.memory._lock:
                     run_messages = [{"role": "system", "content": current_system_prompt}] + list(self.memory.messages)
-                
-                # Re-calculate tokens after compaction
-                messages_tokens = 0
-                with self.memory._lock:
-                    for m in self.memory.messages:
-                        messages_tokens += self.memory.count_tokens(m.get("content") or "")
-                        if "tool_calls" in m and m["tool_calls"]:
-                            messages_tokens += self.memory.count_tokens(safe_json_dumps(m["tool_calls"]))
+                    messages_tokens = sum(self.memory.count_tokens(m.get("content") or "") for m in self.memory.messages)
                 
                 total_input_tokens = system_prompt_tokens + messages_tokens + tool_tokens + chat_template_overhead
-                available_output_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
+                absolute_remaining_space = MAX_CONTEXT_TOKENS - total_input_tokens - safety_margin
 
-            # 4. Final Dynamic max_tokens
-            dynamic_max_tokens = min(MAX_OUTPUT_TOKENS, max(1024, available_output_space))
+            # 4. Final Dynamic max_tokens: Allow at least 1024 tokens if possible
+            dynamic_max_tokens = max(1024, min(MAX_OUTPUT_TOKENS, absolute_remaining_space))
             
-            print(f"[Agent] (Turn {iteration}) Input: {total_input_tokens} | Space: {available_output_space} | Dynamic Max: {dynamic_max_tokens}")
+            print(f"[Agent] (Turn {iteration}) Input: {total_input_tokens} | Space: {absolute_remaining_space} | Dynamic Max: {dynamic_max_tokens}")
             # --------------------------------------------------------
 
             print(f"[Agent] (Turn {iteration}) Requesting completion...")
@@ -312,10 +342,6 @@ class ChemistryAgent:
 
             response_message = response.choices[0].message
             finish_reason = getattr(response.choices[0], "finish_reason", None)
-            
-            if finish_reason == "length":
-                print(f"[Agent Warning] Response was truncated due to MAX_OUTPUT_TOKENS ({MAX_OUTPUT_TOKENS}) limit!")
-                self._write_telemetry("response_truncated", {"max_tokens": MAX_OUTPUT_TOKENS})
 
             usage = getattr(response, "usage", None)
             usage_data = {
@@ -324,38 +350,24 @@ class ChemistryAgent:
                 "total_tokens": getattr(usage, "total_tokens", 0)
             } if usage else {}
 
-            run_messages.append(response_message)
-            
-            # Extract and log the thought process (Chain of Thought)
             content = response_message.content or ""
-            # First try provider-specific reasoning fields (vLLM: reasoning or reasoning_content)
-            thought = self._extract_reasoning_from_message(response_message)
-
-            # If not found, fall back to tag extraction from content (legacy chem-coder)
-            if not thought:
-                thought = self._extract_thought(content)
-            
+            # Extract reasoning using available mechanisms
+            thought = self._extract_reasoning_from_message(response_message) or self._extract_thought(content)
             visible_content = self._strip_thought(content)
 
             if thought:
                 self._log_thought(iteration, thought)
 
-            model_response_log = {
+            self._write_telemetry("model_response", {
                 "iteration": iteration,
                 "has_thought": bool(thought),
                 "thought": thought or None,
                 "visible_content": visible_content or None,
                 "tool_calls": bool(response_message.tool_calls),
+                "finish_reason": finish_reason,
                 "latency_ms": latency_ms,
                 "usage": usage_data
-            }
-
-            if response_message.tool_calls:
-                model_response_log["tool_call_names"] = [
-                    tool_call.function.name for tool_call in response_message.tool_calls
-                ]
-
-            self._write_telemetry("model_response", model_response_log)
+            })
 
             # 1. Handle Native Tool Calls
             if response_message.tool_calls:
@@ -378,88 +390,22 @@ class ChemistryAgent:
                     
                     # Save the tool response to memory
                     self.memory.add_tool_response(tool_call.id, function_name, safe_json_dumps(result))
-                    
-                    run_messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": safe_json_dumps(result)
-                    })
                 continue
 
             # 2. Handle XML Fallback
             if "<tool_call>" in content:
                 print(f"[Agent] Detected XML tool call fallback. Parsing...")
-                
-                # Save the assistant's XML tool call to memory
                 self.memory.add_message("assistant", content)
-                
                 xml_matches = re.findall(r'<tool_call>(.*?)</tool_call>', content, re.DOTALL)
                 
                 if xml_matches:
                     for match in xml_matches:
                         try:
-                            # Cleanup literal newlines inside JSON strings (common model error)
-                            # This is a bit risky but helps with malformed fallback calls
-                            sanitized_match = match.strip()
-                            if '\n' in sanitized_match:
-                                # Replace literal newlines with escaped ones only if they are likely inside a string
-                                # Simple heuristic: if a newline is followed by something that isn't a key or brace
-                                pass 
-                            
-                            try:
-                                parsed_call = json.loads(sanitized_match)
-                            except json.JSONDecodeError:
-                                # Fallback: try to fix literal newlines in multi-line strings
-                                # Look for "content": "..." and escape newlines within it
-                                if '"content":' in sanitized_match:
-                                    # Very basic heuristic: find the content start and end
-                                    parts = sanitized_match.split('"content":', 1)
-                                    prefix = parts[0] + '"content":'
-                                    rest = parts[1].strip()
-                                    if rest.startswith('"'):
-                                        # It's a string. Find the closing quote and escape newlines in between.
-                                        # This is non-trivial with nested quotes.
-                                        # Let's try a simpler approach: just allow literal newlines in json.loads if possible?
-                                        # No, json.loads doesn't support that.
-                                        
-                                        # Attempt to use regex to find the key-value pairs if JSON fails
-                                        name_match = re.search(r'"name":\s*"(.*?)"', sanitized_match)
-                                        if name_match:
-                                            tool_name = name_match.group(1)
-                                            # If it's write_file, we can try to extract the content more aggressively
-                                            if tool_name == "write_file":
-                                                path_match = re.search(r'"file_path":\s*"(.*?)"', sanitized_match)
-                                                # Use regex to find everything after "content": " until the end of the string
-                                                content_match = re.search(r'"content":\s*"(.*)"', sanitized_match, re.DOTALL)
-                                                if path_match and content_match:
-                                                    tool_args = {
-                                                        "file_path": path_match.group(1),
-                                                        "content": content_match.group(1).replace('\\n', '\n') # Unescape if model did both
-                                                    }
-                                                    parsed_call = {"name": tool_name, "arguments": tool_args}
-                                                else:
-                                                    raise # Re-raise to let the outer catch handle it
-                                            else:
-                                                raise
-                                        else:
-                                            raise
-                                    else:
-                                        raise
-                                else:
-                                    raise
-
+                            parsed_call = json.loads(match.strip())
                             tool_name = parsed_call.get("name")
                             tool_args = parsed_call.get("arguments")
                             
                             if tool_name:
-                                # Pre-process arguments if it's a string that failed to parse
-                                if isinstance(tool_args, str):
-                                    try:
-                                        tool_args = json.loads(tool_args)
-                                    except:
-                                        pass
-                                
                                 result = self._execute_tool(tool_name, tool_args)
                                 self._write_telemetry("tool_execution", {
                                     "iteration": iteration,
@@ -468,34 +414,43 @@ class ChemistryAgent:
                                     "result": result,
                                     "fallback": "xml"
                                 })
-                                
                                 response_content = f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{safe_json_dumps(result)}\n</tool_response>"
-                                
-                                # Save the XML tool response to memory as a user message (fallback pattern)
                                 self.memory.add_message("user", response_content)
-                                
-                                run_messages.append({
-                                    "role": "user",
-                                    "content": response_content
-                                })
                         except Exception as parse_err:
                             print(f"[Agent] XML Parse Error: {parse_err}")
                     continue
 
-            # 3. Final Response
-            final_output = self._strip_thought(content)
-
-            # Save final assistant response to memory
-            self.memory.add_message("assistant", final_output)
-            self.memory.save_to_file()
+            # 3. Final Response Generation & Auto-Continuation
+            final_chunk = self._strip_thought(content)
             
-            # 🚀 TRIGGER ASYNC COMPACTION: Start background summarization after final response
+            # Smooth merging without inserting unnatural leading newlines if chunk connects directly
+            if accumulated_final_response:
+                if final_chunk and not final_chunk.startswith("\n") and not accumulated_final_response.endswith("\n"):
+                    accumulated_final_response += "\n" + final_chunk
+                else:
+                    accumulated_final_response += final_chunk
+            else:
+                accumulated_final_response = final_chunk
+
+            # Auto-continue if response was cut off due to output length limits!
+            if finish_reason == "length":
+                print(f"[Agent Warning] Response was cut off due to length. Requesting continuation...")
+                # Add the partial response to memory so the model has context for what it already said
+                self.memory.add_message("assistant", final_chunk)
+                continuation_prompt = "Your previous response was cut off due to output length limits. Please continue EXACTLY from where you left off without repeating previous text or greetings."
+                self.memory.add_message("user", continuation_prompt)
+                continue # Loop continues, completion will be requested again
+
+            # Final clean response (finish_reason == "stop" or similar)
+            self.memory.add_message("assistant", accumulated_final_response)
+            self.memory.save_to_file()
             self.memory.trigger_async_compaction(self, current_system_prompt)
             
-            self._write_telemetry("session_end", {"final_response": final_output})
-            return final_output
+            self._write_telemetry("session_end", {"final_response": accumulated_final_response})
+            return accumulated_final_response
 
-        abort_msg = "Agent reached maximum iterations without finishing."
+        # Fallback if loop ends without a stop signal
+        abort_msg = accumulated_final_response or "Agent reached maximum iterations without finishing."
         self._write_telemetry("session_abort", {"reason": abort_msg})
         return abort_msg
 

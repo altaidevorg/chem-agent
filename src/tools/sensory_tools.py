@@ -87,7 +87,8 @@ class AnalyzeSensoryPanelTool(BaseTool):
         sensory_data: List[Dict[str, Any]], 
         attributes: List[str],
         sample_col: str = "sample_id",
-        panelist_col: str = "panelist_id"
+        panelist_col: str = "panelist_id",
+        **kwargs
     ) -> Dict[str, Any]:
         try:
             df = pd.DataFrame(sensory_data)

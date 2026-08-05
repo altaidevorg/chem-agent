@@ -1,7 +1,7 @@
 # src/tools/file_tools.py
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pypdf import PdfReader
 from src.tools.base import BaseTool, ToolRegistry
 
@@ -27,10 +27,17 @@ class ReadFileTool(BaseTool):
             "required": ["file_path"]
         }
 
-    def execute(self, file_path: str) -> Dict[str, Any]:
+    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Reads the content of a local file. Supports .txt, .md, .json, .csv, .jsonl, and .pdf formats."""
+        if workspace:
+            try:
+                real_path = workspace.resolve(file_path)
+                file_path = str(real_path)
+            except PermissionError as e:
+                return {"error": str(e)}
+
         if not os.path.exists(file_path):
-            return {"error": f"File not found at local path: {file_path}"}
+            return {"error": f"File not found: {file_path}"}
         
         _, ext = os.path.splitext(file_path.lower())
         
@@ -89,9 +96,16 @@ class ListFilesTool(BaseTool):
             }
         }
 
-    def execute(self, directory_path: str = ".", **kwargs) -> Dict[str, Any]:
+    def execute(self, directory_path: str = ".", workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Lists contents of a directory."""
         try:
+            if workspace:
+                try:
+                    real_path = workspace.resolve(directory_path)
+                    directory_path = str(real_path)
+                except PermissionError as e:
+                    return {"error": str(e)}
+
             if not os.path.exists(directory_path):
                 return {"error": f"Directory not found: {directory_path}"}
             
@@ -145,9 +159,16 @@ class WriteFileTool(BaseTool):
             "required": ["file_path", "content"]
         }
 
-    def execute(self, file_path: str, content: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, file_path: str, content: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Writes or overwrites text content to a specified file path. Automatically creates parent directories."""
         try:
+            if workspace:
+                try:
+                    real_path = workspace.resolve(file_path)
+                    file_path = str(real_path)
+                except PermissionError as e:
+                    return {"error": str(e)}
+
             parent_dir = os.path.dirname(file_path)
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)

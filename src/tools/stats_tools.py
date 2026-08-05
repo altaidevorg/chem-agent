@@ -1364,7 +1364,16 @@ class AnalyzeDatasetTool(BaseTool):
         usl: Optional[float] = None,
         where_clause: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
+        workspace: Optional[Any] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
+        if workspace:
+            try:
+                real_path = workspace.resolve(file_path)
+                file_path = str(real_path)
+            except PermissionError as e:
+                return {"error": str(e), "status": "fail"}
+
         if not os.path.exists(file_path):
             return {"error": f"File not found at path: {file_path}", "status": "fail"}
 
@@ -1514,7 +1523,8 @@ class AnalyzeDesignOfExperimentsTool(BaseTool):
         experiment_data: List[Dict[str, Any]], 
         target_column: str, 
         factors: List[str], 
-        goal: str = "maximize"
+        goal: str = "maximize",
+        **kwargs
     ) -> Dict[str, Any]:
         try:
             df = pd.DataFrame(experiment_data)
@@ -1657,7 +1667,8 @@ class PredictShelfLifeArrheniusTool(BaseTool):
         stability_data: List[Dict[str, Any]], 
         failure_threshold: float,
         target_temperature: float = 25.0,
-        time_unit: str = "days"
+        time_unit: str = "days",
+        **kwargs
     ) -> Dict[str, Any]:
         try:
             df = pd.DataFrame(stability_data)
@@ -1850,10 +1861,21 @@ class AnalyzeDeviationTool(BaseTool):
         process_file: str,
         ingredients_file: str,
         target_metric: Optional[str] = None,
+        workspace: Optional[Any] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         # FIX: Clean quotes from column names to prevent Pandas lookup errors
         if target_metric:
             target_metric = target_metric.strip("'\"")
+
+        # Resolve paths via workspace if provided
+        if workspace:
+            try:
+                quality_file = str(workspace.resolve(quality_file))
+                process_file = str(workspace.resolve(process_file))
+                ingredients_file = str(workspace.resolve(ingredients_file))
+            except PermissionError as e:
+                return {"error": f"Workspace access denied: {str(e)}"}
 
         try:
             # 1. Load Data
@@ -2023,11 +2045,20 @@ class AnalyzeSPCTool(BaseTool):
         file_path: str,
         target_column: str,
         timestamp_column: Optional[str] = None,
+        workspace: Optional[Any] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         # FIX: Clean quotes from column names to prevent Pandas lookup errors
         target_column = target_column.strip("'\"")
         if timestamp_column:
             timestamp_column = timestamp_column.strip("'\"")
+
+        # Resolve path via workspace if provided
+        if workspace:
+            try:
+                file_path = str(workspace.resolve(file_path))
+            except PermissionError as e:
+                return {"error": f"Workspace access denied: {str(e)}"}
 
         try:
             # 1. Load and Sort Data

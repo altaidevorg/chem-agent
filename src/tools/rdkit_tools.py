@@ -70,7 +70,7 @@ class ResolveNameToSmilesTool(BaseTool):
             "required": ["molecule_name"]
         }
 
-    def execute(self, molecule_name: str) -> Dict[str, Any]:
+    def execute(self, molecule_name: str, **kwargs) -> Dict[str, Any]:
         """Resolves a common drug or molecule name to its canonical/isomeric SMILES string using PubChem API via a robust POST request."""
         try:
             url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/property/SMILES,ConnectivitySMILES,IsomericSMILES,CanonicalSMILES/JSON"
@@ -131,7 +131,7 @@ class CalculateMolecularPropertiesTool(BaseTool):
             "required": []
         }
 
-    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
         if err:
             return err
@@ -201,7 +201,7 @@ class CalculateDrugLikenessTool(BaseTool):
         logs = 0.16 - (0.63 * logp) - (0.0062 * mw) + (0.066 * rot_bonds) - (0.74 * ap)
         return round(logs, 2)
 
-    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
         if err:
             return err
@@ -283,9 +283,15 @@ class GenerateMoleculeImageTool(BaseTool):
             "required": ["smiles", "file_path"]
         }
 
-    def execute(self, smiles: str, file_path: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Generates a 2D image diagram of a molecule from its SMILES string and saves it to disk."""
         try:
+            if workspace:
+                try:
+                    file_path = str(workspace.resolve(file_path))
+                except PermissionError as e:
+                    return {"error": f"Workspace access denied: {str(e)}"}
+
             parent_dir = os.path.dirname(file_path)
             if parent_dir and not os.path.exists(parent_dir):
                 os.makedirs(parent_dir, exist_ok=True)
@@ -368,7 +374,7 @@ class FetchChemicalSafetyDataTool(BaseTool):
             # Fallback to empty dict if network is down or URL changes
             self._GHS_DICTIONARY = {}
 
-    def execute(self, molecule_name: str) -> Dict[str, Any]:
+    def execute(self, molecule_name: str, **kwargs) -> Dict[str, Any]:
         """Uses PubChem PUG-VIEW API and cross-references the live GHS dictionary mapping."""
         try:
             self._ensure_dictionary_loaded()
@@ -510,7 +516,7 @@ class SearchSubstructureTool(BaseTool):
             "required": ["smiles", "pattern", "chirality_enforced"]
         }
 
-    def execute(self, smiles: str, pattern: str, chirality_enforced: bool = False) -> Dict[str, Any]:
+    def execute(self, smiles: str, pattern: str, chirality_enforced: bool = False, **kwargs) -> Dict[str, Any]:
         """Checks if a specific substructure pattern exists within a target molecule using RDKit."""
         try:
             with rdBase.BlockLogs():
@@ -569,7 +575,8 @@ class CalculateMolecularSimilarityTool(BaseTool):
         smiles1: Optional[str] = None, 
         smiles2: Optional[str] = None,
         molecule_name1: Optional[str] = None,
-        molecule_name2: Optional[str] = None
+        molecule_name2: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         s1_valid, err1 = _resolve_smiles_or_name(smiles1, molecule_name1)
         if err1:
@@ -622,7 +629,7 @@ class DeconstructCoreAndSidechainsTool(BaseTool):
             "required": ["smiles", "core_smarts_or_smiles"]
         }
 
-    def execute(self, smiles: str, core_smarts_or_smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, core_smarts_or_smiles: str, **kwargs) -> Dict[str, Any]:
         """Isolates sidechains by replacing the core scaffold with dummy atoms labeled by index."""
         try:
             with rdBase.BlockLogs():
@@ -682,7 +689,7 @@ class SearchAdvancedSubstructureTool(BaseTool):
             "required": ["smiles", "pattern", "constraint_atom_idx", "query_type"]
         }
 
-    def execute(self, smiles: str, pattern: str, constraint_atom_idx: int, query_type: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, pattern: str, constraint_atom_idx: int, query_type: str, **kwargs) -> Dict[str, Any]:
         """Performs advanced substructure matching with dynamic sidechain filtering."""
         try:
             with rdBase.BlockLogs():
@@ -757,7 +764,7 @@ class FindMaximumCommonSubstructureTool(BaseTool):
             "required": []
         }
 
-    def execute(self, smiles_list: List[str] = None, smiles1: str = None, smiles2: str = None, ring_matches_ring_only: bool = False, complete_rings_only: bool = False) -> Dict[str, Any]:
+    def execute(self, smiles_list: List[str] = None, smiles1: str = None, smiles2: str = None, ring_matches_ring_only: bool = False, complete_rings_only: bool = False, **kwargs) -> Dict[str, Any]:
         """Finds the largest common atom/bond mapping shared by multiple molecules."""
         try:
             # Flexible parameter adapter
@@ -844,7 +851,7 @@ class InterpretSmartsTool(BaseTool):
             "required": ["smarts"]
         }
 
-    def execute(self, smarts: str) -> Dict[str, Any]:
+    def execute(self, smarts: str, **kwargs) -> Dict[str, Any]:
         """Deconstructs SMARTS strings using non-destructive topological graph isomorphism."""
         try:
             with rdBase.BlockLogs():
@@ -971,7 +978,7 @@ class GetMolecularFormulaAndChargeTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         """Computes the chemical formula and net charge of a molecule."""
         try:
             with rdBase.BlockLogs():
@@ -1018,7 +1025,7 @@ class CalculateAllDescriptorsTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -1089,9 +1096,15 @@ class ExportMoleculeFileTool(BaseTool):
             "required": ["smiles", "file_path"]
         }
 
-    def execute(self, smiles: str, file_path: str, generate_3d: bool = False) -> Dict[str, Any]:
+    def execute(self, smiles: str, file_path: str, generate_3d: bool = False, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Exports a SMILES string to a MOL or SDF file with coordinate generation."""
         try:
+            if workspace:
+                try:
+                    file_path = str(workspace.resolve(file_path))
+                except PermissionError as e:
+                    return {"error": f"Workspace access denied: {str(e)}"}
+
             parent_dir = os.path.dirname(file_path)
             if parent_dir and not os.path.exists(parent_dir):
                 os.makedirs(parent_dir, exist_ok=True)
@@ -1151,7 +1164,7 @@ class ConvertSmilesToInchiTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         """Converts SMILES to InChI and InChIKey safely with guard checks and optimized RDKit calls."""
         try:
             with rdBase.BlockLogs():
@@ -1197,7 +1210,7 @@ class CountHeavyAtomsAndRingsTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         """Calculates heavy atom count and total ring count for a molecule."""
         try:
             with rdBase.BlockLogs():
@@ -1252,7 +1265,7 @@ class DetectFunctionalGroupsTool(BaseTool):
             "required": []
         }
 
-    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """Detects presence and counts of basic functional groups using pre-compiled SMARTS matching."""
         smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
         if err:
@@ -1301,7 +1314,7 @@ class ResolveSmilesToNameTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         """Resolves a SMILES string to its common title and IUPAC name via PubChem using a robust POST request."""
         try:
             # Use POST endpoint to avoid issues with slashes in SMILES and URL length limits
@@ -1408,7 +1421,7 @@ class EstimateVolatilityAndNoteTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -1516,7 +1529,7 @@ class CheckChemicalReactivityTool(BaseTool):
             self._MATRIX_CACHE = {"groups": compiled_groups, "id_to_name": id_to_name, "rules": rules}
         return self._MATRIX_CACHE
 
-    def execute(self, queries: List[str]) -> Dict[str, Any]:
+    def execute(self, queries: List[str], **kwargs) -> Dict[str, Any]:
         try:
             from src.database.manager import DatabaseManager
             from src.database.standardizer import ChemicalStandardizer
@@ -1670,7 +1683,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
             "required": ["smiles_list"]
         }
 
-    def execute(self, smiles_list: List[str]) -> Dict[str, Any]:
+    def execute(self, smiles_list: List[str], **kwargs) -> Dict[str, Any]:
         try:
             if not smiles_list or len(smiles_list) < 1:
                 return {"error": "Provide at least one SMILES string."}
@@ -1804,7 +1817,7 @@ class CalculateEmulsionPropertiesTool(BaseTool):
             
         return total_h_mass
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -1880,7 +1893,7 @@ class CheckRegulatoryComplianceTool(BaseTool):
             "required": ["queries"]
         }
 
-    def execute(self, queries: List[str]) -> Dict[str, Any]:
+    def execute(self, queries: List[str], **kwargs) -> Dict[str, Any]:
         """
         Checks a list of names or CAS numbers against regulatory data.
         Uses InChIKey-based resolution and JOIN queries for high accuracy.
@@ -2055,7 +2068,7 @@ class FindIngredientReplacementTool(BaseTool):
             "required": ["target_smiles"]
         }
 
-    def execute(self, target_smiles: str, regulatory_category: Optional[str] = None, max_results: int = 5) -> Dict[str, Any]:
+    def execute(self, target_smiles: str, regulatory_category: Optional[str] = None, max_results: int = 5, **kwargs) -> Dict[str, Any]:
         try:
             from src.database.manager import DatabaseManager
             from src.database.standardizer import ChemicalStandardizer
@@ -2236,7 +2249,7 @@ class CalculateHansenParametersTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str) -> Dict[str, Any]:
+    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -2357,7 +2370,7 @@ class EstimatePkaAndLogDTool(BaseTool):
             "required": ["smiles"]
         }
 
-    def execute(self, smiles: str, ph: float = 7.4) -> Dict[str, Any]:
+    def execute(self, smiles: str, ph: float = 7.4, **kwargs) -> Dict[str, Any]:
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)

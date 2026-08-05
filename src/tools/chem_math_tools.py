@@ -278,7 +278,7 @@ class CalculateMixtureCompositionTool(BaseTool):
             "required": ["ingredients"]
         }
 
-    def execute(self, ingredients: list) -> Dict[str, Any]:
+    def execute(self, ingredients: list, **kwargs) -> Dict[str, Any]:
         try:
             total_mass_g = 0.0
             total_volume_ml = 0.0
@@ -525,7 +525,7 @@ class CalculateVocContentTool(BaseTool):
             "required": ["components"]
         }
 
-    def execute(self, components: List[Dict[str, Any]], region: str = "EU") -> Dict[str, Any]:
+    def execute(self, components: List[Dict[str, Any]], region: str = "EU", **kwargs) -> Dict[str, Any]:
         try:
             volatility_tool = EstimateVolatilityAndNoteTool()
             total_mass = 0.0

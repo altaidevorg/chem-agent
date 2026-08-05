@@ -102,22 +102,24 @@ class AgentMemory:
 
             for i in range(len(self.messages)):
                 msg = self.messages[i]
-                if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and len(msg["content"]) > 500:
-                    tool_name = msg.get("name")
-                    if tool_name in metadata_tools and not force_last:
-                        continue
+                if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                    # 🚀 Prune massive tool outputs (e.g. inspect_tool list_all)
+                    if len(msg["content"]) > 1500 and (force_last or i < len(self.messages) - 1):
+                        tool_name = msg.get("name")
+                        if tool_name in metadata_tools and not force_last:
+                            continue
 
-                    has_subsequent_assistant = any(
-                        self.messages[j].get("role") == "assistant"
-                        for j in range(i + 1, len(self.messages))
-                    )
-                    
-                    if has_subsequent_assistant:
-                        original_len = len(msg["content"])
-                        msg["content"] = f"[Tool result pruned. Original size: {original_len} chars. Data already processed by assistant in previous turns.]"
-                    elif force_last and i == len(self.messages) - 1:
-                        original_len = len(msg["content"])
-                        msg["content"] = msg["content"][:1000] + f"\n... [TRUNCATED DUE TO SIZE: {original_len} chars total] ..."
+                        has_subsequent_assistant = any(
+                            self.messages[j].get("role") == "assistant"
+                            for j in range(i + 1, len(self.messages))
+                        )
+                        
+                        if has_subsequent_assistant:
+                            original_len = len(msg["content"])
+                            msg["content"] = f"[Tool result pruned. Original size: {original_len} chars. Data already processed by assistant in previous turns.]"
+                        elif force_last:
+                            original_len = len(msg["content"])
+                            msg["content"] = msg["content"][:1200] + f"\n... [TRUNCATED TOOL OUTPUT: Original size {original_len} chars] ..."
 
     def check_and_compact(self, agent, system_prompt: str, force: bool = False):
         """Synchronous version of compaction for immediate relief before API calls."""

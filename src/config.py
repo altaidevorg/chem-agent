@@ -27,6 +27,7 @@ KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
 SKILLS_DIR = os.path.join(BASE_DIR, "src", "skills", "definitions")
 SESSIONS_DIR = os.path.join(LOGS_DIR, "sessions")
 THOUGHT_LOGS_DIR = os.path.join(LOGS_DIR, "thoughts")
+DEFAULT_WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", DATA_DIR)
 
 # Ensure directories exist
 for directory in [LOGS_DIR, DATA_DIR, OUTPUT_DIR, REPORTS_DIR, SESSIONS_DIR, THOUGHT_LOGS_DIR, KNOWLEDGE_DIR]:

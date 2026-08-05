@@ -59,7 +59,7 @@ class CompareGCMSProfilesTool(BaseTool):
             "required": ["sample_peaks", "standard_peaks"]
         }
 
-    def execute(self, sample_peaks: List[Dict[str, Any]], standard_peaks: List[Dict[str, Any]], rt_tolerance: float = 0.05) -> Dict[str, Any]:
+    def execute(self, sample_peaks: List[Dict[str, Any]], standard_peaks: List[Dict[str, Any]], rt_tolerance: float = 0.05, **kwargs) -> Dict[str, Any]:
         try:
             # Convert to DataFrames for easier processing
             df_sample = pd.DataFrame(sample_peaks).sort_values("rt")
@@ -179,7 +179,7 @@ class DetectGCMSAnomaliesTool(BaseTool):
             "required": ["comparison_results"]
         }
 
-    def execute(self, comparison_results: Dict[str, Any], area_threshold_pct: float = 20.0, min_extra_peak_area: float = 0.1) -> Dict[str, Any]:
+    def execute(self, comparison_results: Dict[str, Any], area_threshold_pct: float = 20.0, min_extra_peak_area: float = 0.1, **kwargs) -> Dict[str, Any]:
         try:
             if comparison_results.get("status") != "success":
                 return {"error": "Invalid comparison results provided."}

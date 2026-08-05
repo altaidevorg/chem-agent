@@ -40,7 +40,7 @@ class LoadSkillTool(BaseTool):
             }
         }
 
-    def execute(self, action: str = "load", skill_name: Optional[str] = None, detail: str = "full") -> Dict[str, Any]:
+    def execute(self, action: str = "load", skill_name: Optional[str] = None, detail: str = "full", **kwargs) -> Dict[str, Any]:
         if action == "list":
             return {"content": self.registry.format_skill_directory()}
 
@@ -51,28 +51,21 @@ class LoadSkillTool(BaseTool):
             meta = self.registry.get_skill_metadata(skill_name)
             if not meta:
                 return {"error": f"Skill '{skill_name}' not found."}
-            return meta
+            return {
+                "skill_name": skill_name,
+                "description": meta.get("description", ""),
+                "required_tools": meta.get("required_tools", [])
+            }
 
         instructions = self.registry.get_skill_instructions(skill_name)
         if not instructions:
             return {"error": f"Skill '{skill_name}' not found or unavailable."}
         
-        # AUTOMATIC TOOL ACTIVATION: Add tools required by the loaded skill to session memory
-        added_tools = []
-        if self.memory:
-            req_tools = self.registry.get_required_tools_for_skills([skill_name])
-            for t in req_tools:
-                if t not in self.memory.active_tools:
-                    self.memory.active_tools.append(t)
-                    added_tools.append(t)
-            
-            if added_tools:
-                print(f"[LoadSkill] Automatically enabled tools for '{skill_name}': {', '.join(added_tools)}")
-        
+        # 🚀 PROGRESSIVE FIX: Batch tool activation removed!
+        # The model will now read the instructions and call 'inspect_tool' for specific tools it needs.
         return {
             "skill_name": skill_name, 
-            "instructions": instructions,
-            "automatically_enabled_tools": added_tools
+            "instructions": instructions
         }
 
 class InspectTool(BaseTool):
@@ -113,12 +106,13 @@ class InspectTool(BaseTool):
             "required": []
         }
 
-    def execute(self, action: str = "inspect", tool_name: Optional[str] = None) -> Dict[str, Any]:
+    def execute(self, action: str = "inspect", tool_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         if action == "list_all":
             all_tools = ToolRegistry.get_all_tools()
             return {
+                "total_tools_registered": len(all_tools),
                 "available_tools": [
-                    {"name": t.name, "description": t.description} for t in all_tools
+                    {"name": t.name, "description": t.description[:120]} for t in all_tools
                 ]
             }
 
@@ -139,6 +133,45 @@ class InspectTool(BaseTool):
             "status": "enabled",
             "schema": tool.get_tool_definition()
         }
+
+class SetWorkspaceTool(BaseTool):
+    """
+    Allows the agent to dynamically change its active working directory.
+    """
+    @property
+    def name(self) -> str:
+        return "set_workspace"
+
+    @property
+    def description(self) -> str:
+        return "Switches the agent's active working directory to a new folder. All subsequent file operations will be relative to this new root."
+
+    @property
+    def parameters(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "workspace_path": {
+                    "type": "string",
+                    "description": "The absolute or relative local path to the new workspace directory."
+                }
+            },
+            "required": ["workspace_path"]
+        }
+
+    def execute(self, workspace_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+        if not workspace:
+            return {"error": "WorkspaceManager not available.", "status": "fail"}
+        
+        try:
+            new_root = workspace.set_workspace(workspace_path)
+            return {
+                "status": "success",
+                "message": f"Workspace successfully changed to: {new_root}",
+                "new_root": new_root
+            }
+        except Exception as e:
+            return {"error": f"Failed to set workspace: {str(e)}", "status": "fail"}
 
 # Note: This tool needs a SkillRegistry instance to be initialized.
 # We will register it in the agent initialization or a central place.

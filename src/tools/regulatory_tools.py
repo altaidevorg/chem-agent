@@ -50,12 +50,19 @@ class UpdateRegulatoryDatabaseTool(BaseTool):
             "required": ["source"],
         }
 
-    def execute(self, source: str, file_path: Optional[str] = None, force_full_refresh: bool = False) -> Dict[str, Any]:
+    def execute(self, source: str, file_path: Optional[str] = None, force_full_refresh: bool = False, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         db = DatabaseManager()
         standardizer = ChemicalStandardizer()
         
         try:
-            # 1. Fetch Data using specialized Fetchers
+            # 1. Resolve path via workspace if provided
+            if workspace and file_path:
+                try:
+                    file_path = str(workspace.resolve(file_path))
+                except PermissionError as e:
+                    return {"error": f"Workspace access denied: {str(e)}"}
+
+            # 2. Fetch Data using specialized Fetchers
             if source == "IFRA":
                 fetcher = IFRAFetcher()
                 df = fetcher.fetch(file_path=file_path)
