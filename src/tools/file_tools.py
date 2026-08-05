@@ -27,46 +27,51 @@ class ReadFileTool(BaseTool):
             "required": ["file_path"]
         }
 
-    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, file_path: Optional[str] = None, path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Reads the content of a local file. Supports .txt, .md, .json, .csv, .jsonl, and .pdf formats."""
+        # 🛡️ Flexible parameter handling: support 'file_path', 'path', or 'filepath'
+        target_path = file_path or path or kwargs.get("filepath")
+        if not target_path:
+            return {"error": "Missing required argument: 'file_path' or 'path'"}
+
         if workspace:
             try:
-                real_path = workspace.resolve(file_path)
-                file_path = str(real_path)
+                real_path = workspace.resolve(target_path)
+                target_path = str(real_path)
             except PermissionError as e:
                 return {"error": str(e)}
 
-        if not os.path.exists(file_path):
-            return {"error": f"File not found: {file_path}"}
+        if not os.path.exists(target_path):
+            return {"error": f"File not found: {target_path}"}
         
-        _, ext = os.path.splitext(file_path.lower())
+        _, ext = os.path.splitext(target_path.lower())
         
         try:
             if ext in ['.txt', '.md', '.csv']:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return {"file_path": file_path, "format": ext, "content": f.read()}
+                with open(target_path, 'r', encoding='utf-8') as f:
+                    return {"file_path": target_path, "format": ext, "content": f.read()}
             
             elif ext == '.json':
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(target_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    return {"file_path": file_path, "format": ".json", "content": data}
+                    return {"file_path": target_path, "format": ".json", "content": data}
 
             elif ext == '.jsonl':
                 data = []
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(target_path, 'r', encoding='utf-8') as f:
                     for line in f:
                         if line.strip():
                             data.append(json.loads(line))
-                return {"file_path": file_path, "format": ".jsonl", "content": data}
+                return {"file_path": target_path, "format": ".jsonl", "content": data}
             
             elif ext == '.pdf':
-                reader = PdfReader(file_path)
+                reader = PdfReader(target_path)
                 text = ""
                 for page in reader.pages:
                     extracted = page.extract_text()
                     if extracted:
                         text += extracted + "\n"
-                return {"file_path": file_path, "format": ".pdf", "content": text.strip()}
+                return {"file_path": target_path, "format": ".pdf", "content": text.strip()}
             
             else:
                 return {"error": f"Unsupported file extension: {ext}. Only .txt, .md, .json, and .pdf are allowed."}
@@ -96,35 +101,38 @@ class ListFilesTool(BaseTool):
             }
         }
 
-    def execute(self, directory_path: str = ".", workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, directory_path: Optional[str] = None, path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Lists contents of a directory."""
+        # 🛡️ Flexible parameter handling
+        target_dir = directory_path or path or kwargs.get("dirpath") or "."
+        
         try:
             if workspace:
                 try:
-                    real_path = workspace.resolve(directory_path)
-                    directory_path = str(real_path)
+                    real_path = workspace.resolve(target_dir)
+                    target_dir = str(real_path)
                 except PermissionError as e:
                     return {"error": str(e)}
 
-            if not os.path.exists(directory_path):
-                return {"error": f"Directory not found: {directory_path}"}
+            if not os.path.exists(target_dir):
+                return {"error": f"Directory not found: {target_dir}"}
             
-            if not os.path.isdir(directory_path):
-                return {"error": f"Path is not a directory: {directory_path}"}
+            if not os.path.isdir(target_dir):
+                return {"error": f"Path is not a directory: {target_dir}"}
 
-            items = os.listdir(directory_path)
+            items = os.listdir(target_dir)
             files = []
             directories = []
 
             for item in items:
-                full_path = os.path.join(directory_path, item)
+                full_path = os.path.join(target_dir, item)
                 if os.path.isdir(full_path):
                     directories.append(item)
                 else:
                     files.append(item)
 
             return {
-                "directory": directory_path,
+                "directory": target_dir,
                 "files": sorted(files),
                 "directories": sorted(directories),
                 "status": "success",
@@ -159,25 +167,30 @@ class WriteFileTool(BaseTool):
             "required": ["file_path", "content"]
         }
 
-    def execute(self, file_path: str, content: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, file_path: Optional[str] = None, path: Optional[str] = None, content: str = "", workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Writes or overwrites text content to a specified file path. Automatically creates parent directories."""
+        # 🛡️ Flexible parameter handling
+        target_path = file_path or path or kwargs.get("filepath")
+        if not target_path:
+            return {"error": "Missing required argument: 'file_path' or 'path'"}
+
         try:
             if workspace:
                 try:
-                    real_path = workspace.resolve(file_path)
-                    file_path = str(real_path)
+                    real_path = workspace.resolve(target_path)
+                    target_path = str(real_path)
                 except PermissionError as e:
                     return {"error": str(e)}
 
-            parent_dir = os.path.dirname(file_path)
+            parent_dir = os.path.dirname(target_path)
             if parent_dir:
                 os.makedirs(parent_dir, exist_ok=True)
                 
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(target_path, 'w', encoding='utf-8') as f:
                 f.write(content)
                 
             return {
-                "file_path": file_path,
+                "file_path": target_path,
                 "status": "success",
                 "message": "File successfully written to disk."
             }

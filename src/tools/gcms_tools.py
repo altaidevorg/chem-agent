@@ -143,6 +143,7 @@ class CompareGCMSProfilesTool(BaseTool):
 class DetectGCMSAnomaliesTool(BaseTool):
     """
     Analyzes a GC-MS profile for potential quality issues.
+    Accepts either prior comparison_results OR raw sample/standard peak lists.
     """
 
     @property
@@ -152,8 +153,8 @@ class DetectGCMSAnomaliesTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Analyzes GC-MS profile for anomalies such as contamination (extra peaks), "
-            "missing components, or significant concentration deviations."
+            "Analyzes GC-MS profile for anomalies such as contamination, missing components, "
+            "or area deviations. Can take 'comparison_results' directly OR 'sample_peaks' and 'standard_peaks'."
         )
 
     @property
@@ -163,7 +164,22 @@ class DetectGCMSAnomaliesTool(BaseTool):
             "properties": {
                 "comparison_results": {
                     "type": "object",
-                    "description": "Output from compare_gcms_profiles."
+                    "description": "Output dictionary from compare_gcms_profiles (optional if raw peaks provided)."
+                },
+                "sample_peaks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Sample peak list (if comparison_results is not provided)."
+                },
+                "standard_peaks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Standard peak list (if comparison_results is not provided)."
+                },
+                "rt_tolerance": {
+                    "type": "number",
+                    "default": 0.05,
+                    "description": "Retention time tolerance if internal comparison is performed."
                 },
                 "area_threshold_pct": {
                     "type": "number",
@@ -176,18 +192,39 @@ class DetectGCMSAnomaliesTool(BaseTool):
                     "default": 0.1
                 }
             },
-            "required": ["comparison_results"]
+            "required": []  # Flexible execution
         }
 
-    def execute(self, comparison_results: Dict[str, Any], area_threshold_pct: float = 20.0, min_extra_peak_area: float = 0.1, **kwargs) -> Dict[str, Any]:
+    def execute(
+        self, 
+        comparison_results: Optional[Dict[str, Any]] = None, 
+        sample_peaks: Optional[List[Dict[str, Any]]] = None,
+        standard_peaks: Optional[List[Dict[str, Any]]] = None,
+        rt_tolerance: float = 0.05,
+        area_threshold_pct: float = 20.0, 
+        min_extra_peak_area: float = 0.1, 
+        **kwargs
+    ) -> Dict[str, Any]:
         try:
+            # Fallback: If comparison_results is not provided, run compare_gcms_profiles logic internally
+            if not comparison_results:
+                if not sample_peaks or not standard_peaks:
+                    return {"error": "Must provide either 'comparison_results' or both 'sample_peaks' and 'standard_peaks'."}
+                
+                comparator = CompareGCMSProfilesTool()
+                comparison_results = comparator.execute(
+                    sample_peaks=sample_peaks, 
+                    standard_peaks=standard_peaks, 
+                    rt_tolerance=rt_tolerance
+                )
+
             if comparison_results.get("status") != "success":
                 return {"error": "Invalid comparison results provided."}
 
             anomalies = []
             
             # 1. Check for significant area deviations in matched peaks
-            for m in comparison_results["matches"]:
+            for m in comparison_results.get("matches", []):
                 # Relative difference: |A1 - A2| / A2 * 100
                 if m["area_std"] > 0:
                     rel_diff = (abs(m["area_sample"] - m["area_std"]) / m["area_std"]) * 100
@@ -201,7 +238,7 @@ class DetectGCMSAnomaliesTool(BaseTool):
                         })
 
             # 2. Check for missing peaks
-            for p in comparison_results["missing_peaks"]:
+            for p in comparison_results.get("missing_peaks", []):
                 anomalies.append({
                     "type": "MISSING_COMPONENT",
                     "severity": "High" if p["area_pct"] > 1.0 else "Medium",
@@ -211,7 +248,7 @@ class DetectGCMSAnomaliesTool(BaseTool):
                 })
 
             # 3. Check for extra peaks (Contamination)
-            for p in comparison_results["extra_peaks"]:
+            for p in comparison_results.get("extra_peaks", []):
                 if p["area_pct"] >= min_extra_peak_area:
                     anomalies.append({
                         "type": "CONTAMINATION_RISK",
@@ -231,10 +268,10 @@ class DetectGCMSAnomaliesTool(BaseTool):
                 "quality_status": status,
                 "anomalies": anomalies,
                 "anomaly_count": len(anomalies),
-                "similarity_score": comparison_results["similarity_score"],
+                "similarity_score": comparison_results.get("similarity_score", 0.0),
                 "summary": (
                     f"QC Status: {status}. Detected {len(anomalies)} anomalies. "
-                    f"Similarity Score: {comparison_results['similarity_score']}."
+                    f"Similarity Score: {comparison_results.get('similarity_score', 0.0)}."
                 )
             }
         except Exception as e:

@@ -13,6 +13,7 @@ This skill allows the agent to act as a Quality Control (QC) analyst, interpreti
 ## 🔴 MANDATORY EXECUTION PROTOCOL
 - **NO MENTAL COMPARISONS:** Regardless of how small the dataset is (even with just 1 or 2 peaks), you **MUST** call `compare_gcms_profiles` to align data and calculate similarity.
 - **NO MENTAL ANOMALY DETECTION:** You **MUST** pass the output of the comparison into `detect_gcms_anomalies` for a professional audit.
+- **TOOL CHAINING:** When performing quality control or anomaly detection on GC-MS data, ALWAYS run `compare_gcms_profiles` first, and immediately pass its JSON output into `detect_gcms_anomalies` in the very next step. Do not attempt to interpret the comparison JSON mentally.
 - **ZERO TOLERANCE:** Manual "human-like" inspections of peak lists are considered unprofessional and error-prone in this system. Always use the Python tools to guarantee scientific accuracy.
 
 ## Core Tools

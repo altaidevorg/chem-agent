@@ -99,13 +99,21 @@ class AgentMemory:
                 return
 
             metadata_tools = ["inspect_dataset", "list_files", "search_columns"]
+            # 🛡️ Tools that should NOT be pruned because their output is critical for subsequent steps
+            protected_tools = ["compare_gcms_profiles", "query_dataset", "analyze_dataset"]
 
             for i in range(len(self.messages)):
                 msg = self.messages[i]
                 if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
                     # 🚀 Prune massive tool outputs (e.g. inspect_tool list_all)
-                    if len(msg["content"]) > 1500 and (force_last or i < len(self.messages) - 1):
-                        tool_name = msg.get("name")
+                    # Increased threshold to 3000 chars and added protected list
+                    char_limit = 3000
+                    tool_name = msg.get("name")
+                    
+                    if tool_name in protected_tools:
+                        continue
+                        
+                    if len(msg["content"]) > char_limit and (force_last or i < len(self.messages) - 1):
                         if tool_name in metadata_tools and not force_last:
                             continue
 
