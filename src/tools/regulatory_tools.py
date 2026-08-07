@@ -38,11 +38,15 @@ class CheckRegulatoryComplianceTool(BaseTool):
             "required": ["queries"]
         }
 
-    def run(self, queries: List[str], **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """
         Checks a list of names or CAS numbers against regulatory data.
         Uses InChIKey-based resolution and JOIN queries for high accuracy.
         """
+        queries = kwargs.get("queries")
+        if not queries:
+            return {"status": "error", "error": "Missing required parameter 'queries'."}
+
         try:
             from src.database.manager import DatabaseManager
             from src.database.standardizer import ChemicalStandardizer
@@ -215,7 +219,12 @@ class UpdateRegulatoryDatabaseTool(BaseTool):
             "required": ["source"],
         }
 
-    def run(self, source: str, file_path: Optional[str] = None, force_full_refresh: bool = False, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        source = kwargs.get("source")
+        file_path = kwargs.get("file_path")
+        force_full_refresh = kwargs.get("force_full_refresh", False)
+        workspace = kwargs.get("workspace")
+        
         db = DatabaseManager()
         standardizer = ChemicalStandardizer()
         

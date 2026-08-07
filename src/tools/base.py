@@ -8,6 +8,26 @@ class BaseTool(ABC):
     Defines the interface for tool definition and execution.
     """
     
+    # Global map to dynamically resolve common parameter naming errors
+    GLOBAL_ALIASES = {
+        "name": "molecule_name",
+        "moleculename": "molecule_name",
+        "outputpath": "file_path",
+        "targetpath": "file_path",
+        "targetsmiles": "smiles",
+        "patternsmarts": "pattern",
+        "smilespattern": "pattern",
+        "usechirality": "chirality_enforced",
+        "smiles1": "smiles1",
+        "smiles2": "smiles2",
+        "moleculename1": "molecule_name1",
+        "moleculename2": "molecule_name2",
+        "ingredients": "queries",
+        "compounds": "queries",
+        "criteria": "regulatory_category",
+        "regulatorycategory": "regulatory_category"
+    }
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -29,39 +49,74 @@ class BaseTool(ABC):
     def execute(self, **kwargs) -> Dict[str, Any]:
         """
         The actual implementation of the tool. 
-        Can be overridden by subclasses to implement the 4-layer architecture.
+        Must be overridden by subclasses.
         """
-        if hasattr(self, 'run'):
-            return self.run(**kwargs)
         raise NotImplementedError(f"Tool {self.name} must implement execute() method.")
 
-    def _sanitize_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, **kwargs) -> Dict[str, Any]:
         """
-        Layer 1: Sanitizer
-        Converts all keys to lowercase and trims string values.
+        Entry point for tool execution. Handles sanitization, 
+        alias resolution, and validation before calling execute().
         """
-        sanitized = {}
+        # 1. Normalize and resolve aliases
+        sanitized_kwargs = {}
         for k, v in kwargs.items():
-            key = k.lower().strip()
-            val = v.strip() if isinstance(v, str) else v
-            sanitized[key] = val
-        return sanitized
+            # Basic cleaning: lower, strip, remove underscores
+            clean_k = k.lower().replace("_", "").strip()
+            
+            # Use global alias map to find the canonical key
+            canonical_key = self.GLOBAL_ALIASES.get(clean_k, clean_k)
+            
+            # If the canonical key doesn't exist in our map but the tool expects 
+            # something similar (e.g. without underscores), we check tool's expected params
+            expected_params = [p.lower() for p in self.parameters.get("properties", {}).keys()]
+            if canonical_key not in expected_params:
+                # Try finding a match in expected params by removing underscores
+                for ep in expected_params:
+                    if ep.replace("_", "") == clean_k:
+                        canonical_key = ep
+                        break
+
+            sanitized_kwargs[canonical_key] = v
+
+        # 2. Validation with Tutorial Error Messages
+        required = self.parameters.get("required", [])
+        missing = [r for r in required if r not in sanitized_kwargs]
+        
+        if missing:
+            expected = list(self.parameters.get("properties", {}).keys())
+            error_msg = (
+                f"Missing required parameter(s): {', '.join(missing)}. "
+                f"Received: {list(kwargs.keys())}. "
+                f"Expected Parameters for '{self.name}': {expected}. "
+                "Please correct your parameters and retry WITHOUT calling 'inspect_tool'."
+            )
+            return {
+                "status": "error",
+                "error": error_msg,
+                "hint": "Check the parameter names carefully. Common errors include using 'name' instead of 'molecule_name'."
+            }
+
+        # 3. Call actual implementation
+        try:
+            return self.execute(**sanitized_kwargs)
+        except Exception as e:
+            return {
+                "status": "error", 
+                "error": f"Internal execution error in {self.name}: {str(e)}",
+                "tool": self.name
+            }
+
+    def _sanitize_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Deprecated: Logic moved to run() for more robust handling."""
+        return kwargs
 
     def _get_required_params(self) -> List[str]:
-        """Extracts required parameter names from the tool's JSON schema."""
+        """Deprecated: Logic moved to run()."""
         return self.parameters.get("required", [])
 
     def _validate_inputs(self, sanitized_kwargs: Dict[str, Any]) -> Optional[str]:
-        """
-        Layer 2: Fail-Fast & Schema Check
-        Ensures all required parameters (case-insensitive) are present.
-        Returns an error message if validation fails, else None.
-        """
-        required = [r.lower() for r in self._get_required_params()]
-        missing = [r for r in required if sanitized_kwargs.get(r) is None]
-        
-        if missing:
-            return f"Validation Error in {self.name}: Missing required parameter(s): {', '.join(missing)}. Please provide these values to proceed."
+        """Deprecated: Logic moved to run()."""
         return None
 
     def get_tool_definition(self) -> Dict[str, Any]:

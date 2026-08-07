@@ -65,13 +65,14 @@ class ResolveNameToSmilesTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "molecule_name": {"type": "string", "description": "The common name or drug name to resolve."}
+                "molecule_name": {"type": "string", "description": "The common name or drug name to resolve. Note: Do NOT use 'name' or 'molecule_name' with underscores."}
             },
             "required": ["molecule_name"]
         }
 
-    def execute(self, molecule_name: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Resolves a common drug or molecule name to its canonical/isomeric SMILES string using PubChem API via a robust POST request."""
+        molecule_name = kwargs.get("molecule_name")
         try:
             url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/property/SMILES,ConnectivitySMILES,IsomericSMILES,CanonicalSMILES/JSON"
             
@@ -95,10 +96,11 @@ class ResolveNameToSmilesTool(BaseTool):
                 
                 properties = properties_list[0]
                 
-                smiles = (properties.get("SMILES") or 
-                          properties.get("ConnectivitySMILES") or 
-                          properties.get("IsomericSMILES") or 
-                          properties.get("CanonicalSMILES"))
+                # PRIORITIZE ISOMERIC SMILES
+                smiles = (properties.get("IsomericSMILES") or 
+                          properties.get("CanonicalSMILES") or 
+                          properties.get("SMILES") or
+                          properties.get("ConnectivitySMILES"))
                 
                 if not smiles:
                     return {"error": f"No valid SMILES fields found in PubChem response for '{molecule_name}'"}
@@ -106,7 +108,8 @@ class ResolveNameToSmilesTool(BaseTool):
                 return {
                     "molecule_name": molecule_name,
                     "smiles": smiles,
-                    "status": "success"
+                    "status": "success",
+                    "summary": f"Successfully resolved '{molecule_name}' to SMILES: {smiles}"
                 }
         except Exception as e:
             return {"error": f"Could not resolve molecule name '{molecule_name}' to SMILES via PubChem. Error: {str(e)}"}
@@ -125,13 +128,15 @@ class CalculateMolecularPropertiesTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
-                "molecule_name": {"type": "string", "description": "Optional common/trade name of the molecule if SMILES is not known."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores in parameter names."},
+                "molecule_name": {"type": "string", "description": "Optional common/trade name of the molecule if SMILES is not known. Note: Do NOT use 'name' or underscores."}
             },
             "required": []
         }
 
-    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
         smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
         if err:
             return err
@@ -147,17 +152,21 @@ class CalculateMolecularPropertiesTool(BaseTool):
             if mol is None:
                 return {"error": f"SMILES Parse Error for input: '{smiles_valid}'."}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+            mw = round(Descriptors.MolWt(mol), 2)
+            
             return {
                 "smiles": smiles_valid,
-                "formula": rdMolDescriptors.CalcMolFormula(mol),
+                "formula": formula,
                 "formal_charge": Chem.GetFormalCharge(mol),
-                "molecular_weight": round(Descriptors.MolWt(mol), 2),
+                "molecular_weight": mw,
                 "log_p": round(Descriptors.MolLogP(mol), 2),
                 "h_bond_donors": Descriptors.NumHDonors(mol),
                 "h_bond_acceptors": Descriptors.NumHAcceptors(mol),
                 "tpsa": round(Descriptors.TPSA(mol), 2),
                 "rotatable_bonds": Descriptors.NumRotatableBonds(mol),
-                "parsing_status": "Success"
+                "status": "success",
+                "summary": f"Calculated physicochemical properties for {formula} (MW: {mw})."
             }
         except Exception as e:
             return {"error": f"Critical error during molecular property calculation: {str(e)}"}
@@ -179,8 +188,8 @@ class CalculateDrugLikenessTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
-                "molecule_name": {"type": "string", "description": "Optional common/trade name if SMILES is unknown."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional common/trade name if SMILES is unknown. Note: Do NOT use underscores."}
             },
             "required": []
         }
@@ -201,7 +210,9 @@ class CalculateDrugLikenessTool(BaseTool):
         logs = 0.16 - (0.63 * logp) - (0.0062 * mw) + (0.066 * rot_bonds) - (0.74 * ap)
         return round(logs, 2)
 
-    def execute(self, smiles: Optional[str] = None, molecule_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
         smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
         if err:
             return err
@@ -212,6 +223,7 @@ class CalculateDrugLikenessTool(BaseTool):
             if mol is None:
                 return {"error": f"Invalid structure: {smiles_valid}"}
 
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             mw = Descriptors.MolWt(mol)
             logp = Descriptors.MolLogP(mol)
             hbd = Descriptors.NumHDonors(mol)
@@ -242,6 +254,7 @@ class CalculateDrugLikenessTool(BaseTool):
             
             return {
                 "smiles": smiles_valid,
+                "formula": formula,
                 "lipinski_rule_of_five": lipinski,
                 "veber_rules": veber,
                 "modern_metrics": {
@@ -258,7 +271,7 @@ class CalculateDrugLikenessTool(BaseTool):
                 },
                 "drug_likeness_score": "High" if is_drug_like else "Moderate" if lipinski_violations <= 2 else "Low",
                 "status": "success",
-                "summary": f"QED: {qed_val}, logS: {logs_val}. Molecule has {lipinski_violations} Lipinski violations and {veber_violations} Veber violations."
+                "summary": f"Drug-likeness audit for {formula}: QED: {qed_val}, logS: {logs_val}. Violations: {lipinski_violations + veber_violations}."
             }
         except Exception as e:
             return {"error": f"Drug-likeness calculation failed: {str(e)}"}
@@ -277,14 +290,17 @@ class GenerateMoleculeImageTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
-                "file_path": {"type": "string", "description": "The local path where the png should be created. Must point inside the 'output/' directory (e.g., 'output/aspirin.png')."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "file_path": {"type": "string", "description": "The local path where the png should be created. Must point inside the 'output/' directory (e.g., 'output/aspirin.png'). Note: Do NOT use underscores."}
             },
             "required": ["smiles", "file_path"]
         }
 
-    def execute(self, smiles: str, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Generates a 2D image diagram of a molecule from its SMILES string and saves it to disk."""
+        smiles = kwargs.get("smiles")
+        file_path = kwargs.get("file_path")
+        workspace = kwargs.get("workspace")
         try:
             if workspace:
                 try:
@@ -301,14 +317,17 @@ class GenerateMoleculeImageTool(BaseTool):
             if mol is None:
                 return {"error": f"Invalid SMILES format provided for visualization: {smiles}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             AllChem.Compute2DCoords(mol)
             Draw.MolToFile(mol, file_path, size=(400, 400))
             
             return {
                 "smiles": smiles,
+                "formula": formula,
                 "file_path": file_path,
                 "status": "success",
-                "message": "Molecule image successfully generated and saved to disk."
+                "message": "Molecule image successfully generated and saved to disk.",
+                "summary": f"Generated structural diagram for {formula} at {file_path}."
             }
         except Exception as e:
             return {"error": f"Failed to generate molecule image: {str(e)}"}
@@ -329,9 +348,10 @@ class FetchChemicalSafetyDataTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "molecule_name": {"type": "string", "description": "The common or trade name of the molecule to fetch safety records for."}
+                "molecule_name": {"type": "string", "description": "The common or trade name of the molecule to fetch safety records for."},
+                "smiles": {"type": "string", "description": "Optional SMILES string. If provided, the tool will attempt to resolve the name automatically."}
             },
-            "required": ["molecule_name"]
+            "required": []
         }
 
     def _ensure_dictionary_loaded(self) -> None:
@@ -374,8 +394,24 @@ class FetchChemicalSafetyDataTool(BaseTool):
             # Fallback to empty dict if network is down or URL changes
             self._GHS_DICTIONARY = {}
 
-    def execute(self, molecule_name: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Uses PubChem PUG-VIEW API and cross-references the live GHS dictionary mapping."""
+        molecule_name = kwargs.get("molecule_name") or kwargs.get("name")
+        smiles = kwargs.get("smiles")
+
+        # Automatically resolve name from SMILES if name is missing
+        if not molecule_name and smiles:
+            resolved = ResolveSmilesToNameTool().execute(smiles=smiles)
+            if resolved.get("status") == "success":
+                molecule_name = resolved.get("common_name") or resolved.get("iupac_name")
+
+        if not molecule_name:
+            return {
+                "status": "error",
+                "error": "Missing required parameter: 'molecule_name' or valid 'smiles'.",
+                "hint": "Provide the molecule name or its SMILES string to fetch safety data."
+            }
+
         try:
             self._ensure_dictionary_loaded()
             
@@ -481,7 +517,8 @@ class FetchChemicalSafetyDataTool(BaseTool):
                 "signal_word": signal_word,
                 "hazard_statements": hazard_statements if hazard_statements else ["No explicit hazardous statements found."],
                 "precautionary_statements": resolved_precautionary if resolved_precautionary else ["No explicit precautionary statements found."],
-                "status": "success"
+                "status": "success",
+                "summary": f"Fetched safety data for {molecule_name} (Signal: {signal_word})."
             }
         except Exception as e:
             return {"error": f"Failed to parse chemical safety dossier: {str(e)}"}
@@ -502,22 +539,25 @@ class SearchSubstructureTool(BaseTool):
             "properties": {
                 "smiles": {
                     "type": "string", 
-                    "description": "The SMILES representation of the target molecule to search within."
+                    "description": "The SMILES representation of the target molecule to search within. Note: Do NOT use underscores."
                 },
                 "pattern": {
                     "type": "string", 
-                    "description": "The SMARTS or SMILES pattern to look for inside the target molecule."
+                    "description": "The SMARTS or SMILES pattern to look for inside the target molecule. Note: Do NOT use underscores."
                 },
                 "chirality_enforced": {
                     "type": "boolean", 
-                    "description": "Set to true to strictly match stereochemical configurations and tetrahedral chiral centers. Defaults to false."
+                    "description": "Set to true to strictly match stereochemical configurations and tetrahedral chiral centers. Defaults to false. Note: Do NOT use underscores."
                 }
             },
             "required": ["smiles", "pattern", "chirality_enforced"]
         }
 
-    def execute(self, smiles: str, pattern: str, chirality_enforced: bool = False, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Checks if a specific substructure pattern exists within a target molecule using RDKit."""
+        smiles = kwargs.get("smiles")
+        pattern = kwargs.get("pattern")
+        chirality_enforced = kwargs.get("chirality_enforced", False)
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -542,7 +582,8 @@ class SearchSubstructureTool(BaseTool):
                 "match_count": len(matches),
                 "atom_indices": [list(match) for match in matches],
                 "chirality_enforced": chirality_enforced,
-                "status": "success"
+                "status": "success",
+                "summary": f"Substructure search found {len(matches)} matches for pattern '{pattern}'."
             }
         except Exception as e:
             return {"error": f"Substructure search failed: {str(e)}"}
@@ -562,22 +603,20 @@ class CalculateMolecularSimilarityTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles1": {"type": "string", "description": "SMILES of the first molecule."},
-                "smiles2": {"type": "string", "description": "SMILES of the second molecule."},
-                "molecule_name1": {"type": "string", "description": "Optional name of the first molecule."},
-                "molecule_name2": {"type": "string", "description": "Optional name of the second molecule."}
+                "smiles1": {"type": "string", "description": "SMILES of the first molecule. Note: Do NOT use 'smiles_1' or underscores."},
+                "smiles2": {"type": "string", "description": "SMILES of the second molecule. Note: Do NOT use 'smiles_2' or underscores."},
+                "molecule_name1": {"type": "string", "description": "Optional name of the first molecule. Note: Do NOT use underscores."},
+                "molecule_name2": {"type": "string", "description": "Optional name of the second molecule. Note: Do NOT use underscores."}
             },
             "required": []
         }
 
-    def execute(
-        self, 
-        smiles1: Optional[str] = None, 
-        smiles2: Optional[str] = None,
-        molecule_name1: Optional[str] = None,
-        molecule_name2: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles1 = kwargs.get("smiles1")
+        smiles2 = kwargs.get("smiles2")
+        molecule_name1 = kwargs.get("molecule_name1")
+        molecule_name2 = kwargs.get("molecule_name2")
+        
         s1_valid, err1 = _resolve_smiles_or_name(smiles1, molecule_name1)
         if err1:
             return err1
@@ -594,17 +633,25 @@ class CalculateMolecularSimilarityTool(BaseTool):
             if mol1 is None or mol2 is None:
                 return {"error": f"Invalid SMILES provided. smiles1: {s1_valid}, smiles2: {s2_valid}"}
             
+            f1 = rdMolDescriptors.CalcMolFormula(mol1)
+            f2 = rdMolDescriptors.CalcMolFormula(mol2)
+            
             morgan_generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
             fp1 = morgan_generator.GetFingerprint(mol1)
             fp2 = morgan_generator.GetFingerprint(mol2)
             
             similarity_score = DataStructs.TanimotoSimilarity(fp1, fp2)
+            percentage = round(float(similarity_score) * 100, 2)
             
             return {
                 "smiles1": s1_valid,
                 "smiles2": s2_valid,
+                "formula1": f1,
+                "formula2": f2,
                 "tanimoto_similarity": round(float(similarity_score), 4),
-                "similarity_percentage": f"{round(float(similarity_score) * 100, 2)}%"
+                "similarity_percentage": f"{percentage}%",
+                "status": "success",
+                "summary": f"Similarity between {f1} and {f2}: {percentage}%."
             }
         except Exception as e:
             return {"error": str(e)}
@@ -629,8 +676,10 @@ class DeconstructCoreAndSidechainsTool(BaseTool):
             "required": ["smiles", "core_smarts_or_smiles"]
         }
 
-    def execute(self, smiles: str, core_smarts_or_smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Isolates sidechains by replacing the core scaffold with dummy atoms labeled by index."""
+        smiles = kwargs.get("smiles")
+        core_smarts_or_smiles = kwargs.get("core_smarts_or_smiles")
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -654,7 +703,7 @@ class DeconstructCoreAndSidechainsTool(BaseTool):
             
             isolated_sidechains = []
             for frag in frags:
-                frag_smiles = Chem.MolToSmiles(frag)
+                frag_smiles = Chem.MolToSmiles(frag, isomericSmiles=True)
                 isolated_sidechains.append(frag_smiles)
                 
             return {
@@ -662,7 +711,8 @@ class DeconstructCoreAndSidechainsTool(BaseTool):
                 "core_pattern_used": core_smarts_or_smiles,
                 "isolated_sidechains": isolated_sidechains,
                 "total_sidechains_found": len(isolated_sidechains),
-                "status": "success"
+                "status": "success",
+                "summary": f"Deconstructed molecule into {len(isolated_sidechains)} sidechains using core scaffold."
             }
         except Exception as e:
             return {"error": f"Core deconstruction failed: {str(e)}"}
@@ -681,16 +731,20 @@ class SearchAdvancedSubstructureTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the target molecule."},
-                "pattern": {"type": "string", "description": "The SMARTS or SMILES pattern to find."},
-                "constraint_atom_idx": {"type": "integer", "description": "The index of the atom in the pattern where the constraint is applied."},
-                "query_type": {"type": "string", "description": "The type of constraint to apply. Supported: 'alkyl', 'all_carbon'."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the target molecule. Note: Do NOT use underscores."},
+                "pattern": {"type": "string", "description": "The SMARTS or SMILES pattern to find. Note: Do NOT use underscores."},
+                "constraint_atom_idx": {"type": "integer", "description": "The index of the atom in the pattern where the constraint is applied. Note: Do NOT use underscores."},
+                "query_type": {"type": "string", "description": "The type of constraint to apply. Supported: 'alkyl', 'all_carbon'. Note: Do NOT use underscores."}
             },
             "required": ["smiles", "pattern", "constraint_atom_idx", "query_type"]
         }
 
-    def execute(self, smiles: str, pattern: str, constraint_atom_idx: int, query_type: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Performs advanced substructure matching with dynamic sidechain filtering."""
+        smiles = kwargs.get("smiles")
+        pattern = kwargs.get("pattern")
+        constraint_atom_idx = kwargs.get("constraint_atom_idx")
+        query_type = kwargs.get("query_type")
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -724,7 +778,9 @@ class SearchAdvancedSubstructureTool(BaseTool):
                 "total_unfiltered_matches": len(default_matches),
                 "total_filtered_matches": len(filtered_matches),
                 "unfiltered_atom_indices": [list(m) for m in default_matches],
-                "filtered_atom_indices": [list(m) for m in filtered_matches]
+                "filtered_atom_indices": [list(m) for m in filtered_matches],
+                "status": "success",
+                "summary": f"Advanced search found {len(filtered_matches)} filtered matches with '{query_type}' constraint."
             }
         except Exception as e:
             return {"error": str(e)}
@@ -746,26 +802,31 @@ class FindMaximumCommonSubstructureTool(BaseTool):
                 "smiles_list": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "A list of SMILES strings to analyze for a common substructure."
+                    "description": "A list of SMILES strings to analyze. Note: Do NOT use underscores."
                 },
-                "smiles1": {"type": "string", "description": "First SMILES (optional alternative to list)."},
-                "smiles2": {"type": "string", "description": "Second SMILES (optional alternative to list)."},
+                "smiles1": {"type": "string", "description": "First SMILES. Note: Do NOT use 'smiles_1' or underscores."},
+                "smiles2": {"type": "string", "description": "Second SMILES. Note: Do NOT use 'smiles_2' or underscores."},
                 "ring_matches_ring_only": {
                     "type": "boolean",
-                    "description": "If true, ring atoms in the MCS must match ring atoms in the target molecules.",
+                    "description": "If true, ring atoms must match ring atoms. Note: Do NOT use underscores.",
                     "default": False
                 },
                 "complete_rings_only": {
                     "type": "boolean",
-                    "description": "If true, if any part of a ring is included in the MCS, the entire ring must be included.",
+                    "description": "If true, entire rings must match. Note: Do NOT use underscores.",
                     "default": False
                 }
             },
             "required": []
         }
 
-    def execute(self, smiles_list: List[str] = None, smiles1: str = None, smiles2: str = None, ring_matches_ring_only: bool = False, complete_rings_only: bool = False, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Finds the largest common atom/bond mapping shared by multiple molecules."""
+        smiles_list = kwargs.get("smiles_list")
+        smiles1 = kwargs.get("smiles1")
+        smiles2 = kwargs.get("smiles2")
+        ring_matches_ring_only = kwargs.get("ring_matches_ring_only", False)
+        complete_rings_only = kwargs.get("complete_rings_only", False)
         try:
             # Flexible parameter adapter
             if smiles_list is None:
@@ -801,8 +862,9 @@ class FindMaximumCommonSubstructureTool(BaseTool):
                     "smarts": "",
                     "num_atoms": 0,
                     "num_bonds": 0,
-                    "status": "no_common_substructure",
-                    "message": "No common substructure found among the provided molecules."
+                    "status": "success",
+                    "message": "No common substructure found among the provided molecules.",
+                    "summary": "No shared scaffold detected."
                 }
 
             return {
@@ -811,8 +873,9 @@ class FindMaximumCommonSubstructureTool(BaseTool):
                 "num_bonds": res.numBonds,
                 "ring_matches_ring_only": ring_matches_ring_only,
                 "complete_rings_only": complete_rings_only,
-                "status": "timeout" if res.canceled else "success",
-                "timed_out": res.canceled
+                "status": "success",
+                "timed_out": res.canceled,
+                "summary": f"Found Maximum Common Substructure with {res.numAtoms} atoms and {res.numBonds} bonds."
             }
         except Exception as e:
             return {"error": f"MCS calculation failed: {str(e)}"}
@@ -846,13 +909,14 @@ class InterpretSmartsTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smarts": {"type": "string", "description": "The SMARTS string to interpret."}
+                "smarts": {"type": "string", "description": "The SMARTS string to interpret. Note: Do NOT use 'smarts_pattern' or underscores."}
             },
             "required": ["smarts"]
         }
 
-    def execute(self, smarts: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Deconstructs SMARTS strings using non-destructive topological graph isomorphism."""
+        smarts = kwargs.get("smarts")
         try:
             with rdBase.BlockLogs():
                 query = Chem.MolFromSmarts(smarts)
@@ -922,7 +986,8 @@ class InterpretSmartsTool(BaseTool):
                 "atom_breakdown": atom_counts,
                 "ring_count": num_rings,
                 "identified_motifs": sorted(motifs),
-                "status": "success"
+                "status": "success",
+                "summary": f"Interpreted SMARTS as having {query.GetNumAtoms()} atoms and {len(motifs)} identified motifs."
             }
         except Exception as e:
             return {"error": f"SMARTS interpretation failed: {str(e)}"}
@@ -973,27 +1038,35 @@ class GetMolecularFormulaAndChargeTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Computes the chemical formula and net charge of a molecule."""
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES pattern: {smiles}"}
+                return {"error": f"Invalid SMILES pattern: {smiles_valid}"}
             
             formula = rdMolDescriptors.CalcMolFormula(mol)
             net_charge = Chem.GetFormalCharge(mol)
             
             return {
-                "smiles": smiles,
+                "smiles": smiles_valid,
                 "molecular_formula": formula,
                 "net_charge": net_charge,
-                "status": "success"
+                "status": "success",
+                "summary": f"Formula: {formula}, Net Charge: {net_charge}."
             }
         except Exception as e:
             return {"error": f"Failed to compute formula/charge: {str(e)}"}
@@ -1020,18 +1093,26 @@ class CalculateAllDescriptorsTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid SMILES: {smiles_valid}"}
 
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # Define critical descriptors to avoid context bloat
             critical_descriptors = {
                 "MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors", 
@@ -1059,10 +1140,11 @@ class CalculateAllDescriptorsTool(BaseTool):
 
             return {
                 "smiles": smiles,
-                "formula": rdMolDescriptors.CalcMolFormula(mol),
+                "formula": formula,
                 "descriptor_count": len(results),
                 "descriptors": results,
-                "status": "success"
+                "status": "success",
+                "summary": f"Calculated {len(results)} molecular descriptors for {formula}."
             }
         except Exception as e:
             return {"error": f"Failed to calculate all descriptors: {str(e)}"}
@@ -1085,19 +1167,30 @@ class ExportMoleculeFileTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule to export."},
-                "file_path": {"type": "string", "description": "The local path where the file should be created. Must end in .mol or .sdf (e.g., 'output/molecule.mol')."},
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."},
+                "file_path": {"type": "string", "description": "The local path where the file should be created. Must end in .mol or .sdf (e.g., 'output/molecule.mol'). Note: Do NOT use underscores."},
                 "generate_3d": {
                     "type": "boolean", 
-                    "description": "If true, generates optimized 3D coordinates using the ETKDG method. Defaults to false (2D only).",
+                    "description": "If true, generates optimized 3D coordinates. Defaults to false. Note: Do NOT use underscores.",
                     "default": False
                 }
             },
-            "required": ["smiles", "file_path"]
+            "required": ["file_path"]
         }
 
-    def execute(self, smiles: str, file_path: str, generate_3d: bool = False, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Exports a SMILES string to a MOL or SDF file with coordinate generation."""
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        file_path = kwargs.get("file_path")
+        generate_3d = kwargs.get("generate_3d", False)
+        workspace = kwargs.get("workspace")
+        
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             if workspace:
                 try:
@@ -1110,10 +1203,11 @@ class ExportMoleculeFileTool(BaseTool):
                 os.makedirs(parent_dir, exist_ok=True)
                 
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES format provided for export: {smiles}"}
+                return {"error": f"Invalid SMILES format provided for export: {smiles_valid}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # Always add hydrogens for proper file export and 3D modeling
             mol = Chem.AddHs(mol)
             
@@ -1136,11 +1230,13 @@ class ExportMoleculeFileTool(BaseTool):
             
             return {
                 "smiles": smiles,
+                "formula": formula,
                 "file_path": file_path,
                 "format": ext[1:].upper(),
                 "coordinates": "3D (optimized)" if generate_3d else "2D",
                 "status": "success",
-                "message": f"Molecule successfully exported to {file_path} in {ext[1:].upper()} format."
+                "message": f"Molecule successfully exported to {file_path} in {ext[1:].upper()} format.",
+                "summary": f"Exported {formula} as {ext[1:].upper()} file ({'3D' if generate_3d else '2D'})."
             }
         except Exception as e:
             return {"error": f"Failed to export molecule file: {str(e)}"}
@@ -1159,34 +1255,44 @@ class ConvertSmilesToInchiTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule to convert."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Converts SMILES to InChI and InChIKey safely with guard checks and optimized RDKit calls."""
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES pattern for InChI conversion: {smiles}"}
+                return {"error": f"Invalid SMILES pattern for InChI conversion: {smiles_valid}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # 1. Generate InChI string
             inchi_str = inchi.MolToInchi(mol)
             
             # Guard check to prevent passing empty strings to further InChI functions
             if not inchi_str:
-                return {"error": f"RDKit failed to generate a valid InChI string for SMILES: {smiles}"}
+                return {"error": f"RDKit failed to generate a valid InChI string for SMILES: {smiles_valid}"}
             
             # 2. Generate InChIKey directly from molecule (Optimization)
             inchikey = inchi.MolToInchiKey(mol)
             
             return {
-                "smiles": smiles,
+                "smiles": smiles_valid,
+                "formula": formula,
                 "inchi": inchi_str,
                 "inchikey": inchikey,
-                "status": "success"
+                "status": "success",
+                "summary": f"Converted {formula} to InChIKey: {inchikey}."
             }
         except Exception as e:
             return {"error": f"InChI conversion failed due to a critical error: {str(e)}"}
@@ -1205,27 +1311,37 @@ class CountHeavyAtomsAndRingsTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
         """Calculates heavy atom count and total ring count for a molecule."""
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES pattern: {smiles}"}
+                return {"error": f"Invalid SMILES pattern: {smiles_valid}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             heavy_atoms = mol.GetNumHeavyAtoms()
             ring_count = mol.GetRingInfo().NumRings()
             
             return {
-                "smiles": smiles,
+                "smiles": smiles_valid,
+                "formula": formula,
                 "heavy_atom_count": heavy_atoms,
                 "total_ring_count": ring_count,
-                "status": "success"
+                "status": "success",
+                "summary": f"Molecule {formula} has {heavy_atoms} heavy atoms and {ring_count} rings."
             }
         except Exception as e:
             return {"error": f"Failed to count atoms and rings: {str(e)}"}
@@ -1259,8 +1375,8 @@ class DetectFunctionalGroupsTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
-                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown. Note: Do NOT use underscores."}
             },
             "required": []
         }
@@ -1277,6 +1393,7 @@ class DetectFunctionalGroupsTool(BaseTool):
             if mol is None:
                 return {"error": f"Invalid structure: {smiles_valid}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             detected_groups = {}
             for group_name, patt in self._FG_PATTERNS.items():
                 if patt is None:
@@ -1287,10 +1404,13 @@ class DetectFunctionalGroupsTool(BaseTool):
                     "count": len(matches)
                 }
                 
+            num_detected = sum(1 for g in detected_groups.values() if g["present"])
             return {
                 "smiles": smiles_valid,
+                "formula": formula,
                 "functional_groups": detected_groups,
-                "status": "success"
+                "status": "success",
+                "summary": f"Detected {num_detected} functional group types in {formula}."
             }
         except Exception as e:
             return {"error": f"Functional group detection failed: {str(e)}"}
@@ -1309,7 +1429,7 @@ class ResolveSmilesToNameTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES string to resolve into a common name."}
+                "smiles": {"type": "string", "description": "The SMILES string to resolve into a common name. Note: Do NOT use underscores."}
             },
             "required": ["smiles"]
         }
@@ -1350,7 +1470,8 @@ class ResolveSmilesToNameTool(BaseTool):
                     "smiles": smiles,
                     "common_name": common_name or "Unknown Common Name",
                     "iupac_name": iupac_name or "Unknown IUPAC Name",
-                    "status": "success"
+                    "status": "success",
+                    "summary": f"Resolved SMILES to '{common_name}'."
                 }
         except Exception as e:
             return {"error": f"Could not resolve SMILES to name via PubChem. Error: {str(e)}"}
@@ -1416,18 +1537,27 @@ class EstimateVolatilityAndNoteTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid SMILES: {smiles_valid}"}
 
+            formula = rdMolDescriptors.CalcMolFormula(mol)
+            # Use isomeric SMILES for consistent matching
             can_smiles = Chem.MolToSmiles(mol, isomericSmiles=True)
             
             # 1. Check Experimental Lookup First
@@ -1469,12 +1599,14 @@ class EstimateVolatilityAndNoteTool(BaseTool):
                 desc = "Low volatility, provides longevity."
 
             return {
-                "smiles": smiles,
+                "smiles": can_smiles,
+                "formula": formula,
                 "estimated_boiling_point_c": round(bp_c, 1),
                 "odor_note_classification": note_type,
                 "volatility_description": desc,
                 "method": method,
-                "status": "success"
+                "status": "success",
+                "summary": f"Estimated BP for {formula} is {round(bp_c, 1)}C ({note_type})."
             }
         except Exception as e:
             return {"error": f"Volatility estimation failed: {str(e)}"}
@@ -1529,7 +1661,8 @@ class CheckChemicalReactivityTool(BaseTool):
             self._MATRIX_CACHE = {"groups": compiled_groups, "id_to_name": id_to_name, "rules": rules}
         return self._MATRIX_CACHE
 
-    def execute(self, queries: List[str], **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        queries = kwargs.get("queries")
         try:
             from src.database.manager import DatabaseManager
             from src.database.standardizer import ChemicalStandardizer
@@ -1545,7 +1678,7 @@ class CheckChemicalReactivityTool(BaseTool):
             for q in queries:
                 smiles = q
                 if not ("[" in q or "=" in q or "(" in q):
-                    res = ResolveNameToSmilesTool().execute(q)
+                    res = ResolveNameToSmilesTool().execute(molecule_name=q)
                     if "smiles" in res: smiles = res["smiles"]
                 
                 ikey = standardizer.get_inchikey(smiles)
@@ -1677,13 +1810,14 @@ class AuditChemicalCompatibilityTool(BaseTool):
                 "smiles_list": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "A list of SMILES strings representing the formulation components."
+                    "description": "A list of SMILES strings representing the formulation components. Note: Do NOT use underscores."
                 }
             },
             "required": ["smiles_list"]
         }
 
-    def execute(self, smiles_list: List[str], **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles_list = kwargs.get("smiles_list")
         try:
             if not smiles_list or len(smiles_list) < 1:
                 return {"error": "Provide at least one SMILES string."}
@@ -1703,6 +1837,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
                 
                 # Crucial: Add explicit Hydrogens to match SMARTS like [OX2H] or Cl[H]
                 mol_with_hs = Chem.AddHs(mol)
+                formula = rdMolDescriptors.CalcMolFormula(mol)
                 
                 detected_ids = set()
                 for group_id, patterns in groups_registry.items():
@@ -1714,6 +1849,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
                 molecule_metadata.append({
                     "index": i,
                     "smiles": smiles,
+                    "formula": formula,
                     "group_ids": detected_ids
                 })
 
@@ -1730,6 +1866,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
                                 "rule_id": rule["rule_id"],
                                 "severity": rule["severity"],
                                 "involved_components": [meta["smiles"]],
+                                "involved_formulas": [meta["formula"]],
                                 "involved_groups": [id_to_name.get(rule["group_a"], f"Group {rule['group_a']}")],
                                 "involved_indices": [meta["index"]],
                                 "consequence": rule["consequence"],
@@ -1748,6 +1885,7 @@ class AuditChemicalCompatibilityTool(BaseTool):
                                     "rule_id": rule["rule_id"],
                                     "severity": rule["severity"],
                                     "involved_components": [m1["smiles"], m2["smiles"]],
+                                    "involved_formulas": [m1["formula"], m2["formula"]],
                                     "involved_groups": [id_to_name.get(gA), id_to_name.get(gB)],
                                     "involved_indices": [m1["index"], m2["index"]],
                                     "consequence": rule["consequence"],
@@ -1793,9 +1931,10 @@ class CalculateEmulsionPropertiesTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
     def _get_hydrophilic_mass(self, mol) -> float:
@@ -1817,13 +1956,20 @@ class CalculateEmulsionPropertiesTool(BaseTool):
             
         return total_h_mass
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid SMILES: {smiles_valid}"}
 
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # 1. Total Molecular Weight
             total_mw = Descriptors.MolWt(mol)
             
@@ -1853,6 +1999,7 @@ class CalculateEmulsionPropertiesTool(BaseTool):
 
             return {
                 "smiles": smiles,
+                "formula": formula,
                 "molecular_weight": round(total_mw, 2),
                 "hydrophilic_mass_estimate": round(mh, 2),
                 "hlb_value": round(hlb, 2),
@@ -1860,7 +2007,8 @@ class CalculateEmulsionPropertiesTool(BaseTool):
                 "recommended_application": application,
                 "matrix_suitability": suitability,
                 "method": "Griffin's HLB Approximation",
-                "status": "success"
+                "status": "success",
+                "summary": f"Calculated HLB of {round(hlb, 2)} for {formula} ({application})."
             }
         except Exception as e:
             return {"error": f"Emulsion property calculation failed: {str(e)}"}
@@ -1896,7 +2044,7 @@ class FindIngredientReplacementTool(BaseTool):
                 },
                 "regulatory_category": {
                     "type": "string",
-                    "description": "Optional IFRA category (e.g., '1', '4') or 'EU' for flavorings to filter out restricted alternatives.",
+                    "description": "Specify regulatory category code to filter banned substances (e.g., 'EU' for EU cosmetics/flavoring compliance, or IFRA category numbers like '1', '4').",
                 },
                 "max_results": {
                     "type": "integer",
@@ -1907,7 +2055,10 @@ class FindIngredientReplacementTool(BaseTool):
             "required": ["target_smiles"]
         }
 
-    def execute(self, target_smiles: str, regulatory_category: Optional[str] = None, max_results: int = 5, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        target_smiles = kwargs.get("target_smiles")
+        regulatory_category = kwargs.get("regulatory_category")
+        max_results = kwargs.get("max_results", 5)
         try:
             from src.database.manager import DatabaseManager
             from src.database.standardizer import ChemicalStandardizer
@@ -1928,8 +2079,13 @@ class FindIngredientReplacementTool(BaseTool):
             hsp_tool = CalculateHansenParametersTool()
             vol_tool = EstimateVolatilityAndNoteTool()
             
-            target_hsp = hsp_tool.execute(target_smiles)
-            target_vol = vol_tool.execute(target_smiles)
+            target_hsp = hsp_tool.execute(smiles=target_smiles)
+            target_vol = vol_tool.execute(smiles=target_smiles)
+
+            if "error" in target_hsp or target_hsp.get("status") == "error":
+                return {"error": f"HSP calculation failed for target: {target_hsp.get('error')}"}
+            if "error" in target_vol or target_vol.get("status") == "error":
+                return {"error": f"Volatility estimation failed for target: {target_vol.get('error')}"}
             
             fp_gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
             target_fp = fp_gen.GetFingerprint(target_mol)
@@ -1965,6 +2121,10 @@ class FindIngredientReplacementTool(BaseTool):
                 if row['inchikey'] == target_ikey:
                     continue
                 
+                # Ensure candidate has required properties for comparison
+                if row.get('mw') is None or row.get('logp') is None:
+                    continue
+
                 with rdBase.BlockLogs():
                     cand_mol = Chem.MolFromSmiles(row['smiles'])
                 if not cand_mol: continue
@@ -1974,19 +2134,23 @@ class FindIngredientReplacementTool(BaseTool):
                 structural_sim = DataStructs.TanimotoSimilarity(target_fp, cand_fp)
                 
                 # B. Physicochemical Euclidean Distance (Normalized)
-                # We normalize differences relative to target values to get a 0-1 score
                 def norm_diff(val1, val2, scale=1.0):
+                    if val1 is None or val2 is None: return 0.0
                     return math.exp(-abs(val1 - val2) / scale)
                 
                 mw_sim = norm_diff(target_mw, row['mw'], scale=50.0)
                 logp_sim = norm_diff(target_logp, row['logp'], scale=1.0)
                 
-                hsp_dist = math.sqrt(
-                    (target_hsp['delta_d'] - row['hansen_d'])**2 +
-                    (target_hsp['delta_p'] - row['hansen_p'])**2 +
-                    (target_hsp['delta_h'] - row['hansen_h'])**2
-                )
-                hsp_sim = math.exp(-hsp_dist / 5.0)
+                # HSP Similarity (if available in both)
+                hsp_sim = 0.0
+                if all(k in target_hsp for k in ['delta_d', 'delta_p', 'delta_h']) and \
+                   all(row.get(f'hansen_{suffix}') is not None for suffix in ['d', 'p', 'h']):
+                    hsp_dist = math.sqrt(
+                        (target_hsp['delta_d'] - row['hansen_d'])**2 +
+                        (target_hsp['delta_p'] - row['hansen_p'])**2 +
+                        (target_hsp['delta_h'] - row['hansen_h'])**2
+                    )
+                    hsp_sim = math.exp(-hsp_dist / 5.0)
                 
                 # C. Composite Score
                 composite_score = (0.4 * structural_sim) + (0.2 * mw_sim) + (0.2 * logp_sim) + (0.2 * hsp_sim)
@@ -2083,18 +2247,26 @@ class CalculateHansenParametersTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."}
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid SMILES: {smiles_valid}"}
             
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # Ensure hydrogens are added for correct valence matching if needed, 
             # though our SMARTS are designed for heavy atoms.
             
@@ -2145,6 +2317,7 @@ class CalculateHansenParametersTool(BaseTool):
 
             return {
                 "smiles": smiles,
+                "formula": formula,
                 "delta_d": round(dd, 2),
                 "delta_p": round(dp, 2),
                 "delta_h": round(dh, 2),
@@ -2153,7 +2326,8 @@ class CalculateHansenParametersTool(BaseTool):
                 "units": "MPa^0.5",
                 "groups_detected": list(set(details)),
                 "unmatched_heavy_atoms": unmatched_heavy,
-                "status": "success"
+                "status": "success",
+                "summary": f"Calculated HSP for {formula}: dD={round(dd, 1)}, dP={round(dp, 1)}, dH={round(dh, 1)}."
             }
         except Exception as e:
             return {"error": f"HSP calculation failed: {str(e)}"}
@@ -2199,23 +2373,33 @@ class EstimatePkaAndLogDTool(BaseTool):
         return {
             "type": "object",
             "properties": {
-                "smiles": {"type": "string", "description": "The SMILES representation of the molecule."},
+                "smiles": {"type": "string", "description": "The SMILES representation of the molecule. Note: Do NOT use underscores."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."},
                 "ph": {
                     "type": "number", 
-                    "description": "The pH at which to calculate logD (default is 7.4).",
+                    "description": "The pH at which to calculate logD (default is 7.4). Note: Do NOT use underscores.",
                     "default": 7.4
                 }
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(self, smiles: str, ph: float = 7.4, **kwargs) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        ph = kwargs.get("ph", 7.4)
+        
+        smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+        if err:
+            return err
+            
         try:
             with rdBase.BlockLogs():
-                mol = Chem.MolFromSmiles(smiles)
+                mol = Chem.MolFromSmiles(smiles_valid)
             if mol is None:
-                return {"error": f"Invalid SMILES: {smiles}"}
+                return {"error": f"Invalid SMILES: {smiles_valid}"}
 
+            formula = rdMolDescriptors.CalcMolFormula(mol)
             # 1. Calculate base LogP
             logp = float(Descriptors.MolLogP(mol))
 
@@ -2245,7 +2429,6 @@ class EstimatePkaAndLogDTool(BaseTool):
 
             if strongest_acid and strongest_base:
                 # Amphoteric (e.g. amino acids) - simplify to the more extreme one
-                # This is a rough approximation
                 if abs(ph - strongest_acid["pka"]) < abs(ph - strongest_base["pka"]):
                     mol_type = "Acidic (Amphoteric)"
                     pka_used = strongest_acid["pka"]
@@ -2267,6 +2450,7 @@ class EstimatePkaAndLogDTool(BaseTool):
 
             return {
                 "smiles": smiles,
+                "formula": formula,
                 "ph": ph,
                 "logp_neutral": round(logp, 2),
                 "logd_at_ph": round(logd, 2),
@@ -2276,11 +2460,8 @@ class EstimatePkaAndLogDTool(BaseTool):
                     "acidic": [g["group"] for g in acidic_found],
                     "basic": [g["group"] for g in basic_found]
                 },
-                "interpretation": (
-                    f"At pH {ph}, the molecule is estimated to have a distribution coefficient (logD) of {round(logd, 2)}. "
-                    f"A lower logD compared to logP indicates the molecule is partially ionized, making it more water-soluble."
-                ),
-                "status": "success"
+                "status": "success",
+                "summary": f"Estimated pKa and LogD at pH {ph} for {formula} ({mol_type})."
             }
 
         except Exception as e:

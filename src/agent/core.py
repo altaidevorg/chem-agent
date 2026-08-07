@@ -199,14 +199,14 @@ class ChemistryAgent:
         
         start_time = datetime.now()
         try:
-            # Pass workspace to tools that support it (via kwargs)
-            result = tool.execute(workspace=self.workspace, **arguments)
+            # CALL run() INSTEAD OF execute() TO TRIGGER NORMALIZATION AND VALIDATION
+            result = tool.run(workspace=self.workspace, **arguments)
             end_time = datetime.now()
             execution_time_ms = (end_time - start_time).total_seconds() * 1000
             
             # Update structured memory based on tool results
             if name == "resolve_name_to_smiles" and "smiles" in result:
-                self.memory.update_entity(name=arguments.get("molecule_name"), smiles=result["smiles"])
+                self.memory.update_entity(name=arguments.get("molecule_name") or arguments.get("name"), smiles=result["smiles"])
             elif name == "calculate_molecular_properties" and "smiles" in result:
                 self.memory.update_entity(name=None, smiles=result["smiles"], properties=result)
                 
@@ -379,6 +379,20 @@ class ChemistryAgent:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
                     
+                    # --- DUPLICATE CALL PREVENTION ---
+                    current_call_hash = f"{function_name}:{safe_json_dumps(function_args, sort_keys=True)}"
+                    if current_call_hash == self.memory.last_tool_call:
+                        print(f"[Agent Warning] Detected duplicate tool call: {function_name}. Blocking loop.")
+                        duplicate_notice = (
+                            f"SYSTEM NOTICE: You already executed tool '{function_name}' with identical parameters "
+                            "in the previous turn. Review the previous output and proceed to your final response or "
+                            "try a DIFFERENT approach/tool. DO NOT REPEAT THE SAME CALL."
+                        )
+                        self.memory.add_tool_response(tool_call.id, function_name, safe_json_dumps({"error": duplicate_notice}))
+                        continue
+                    
+                    self.memory.last_tool_call = current_call_hash
+                    
                     result = self._execute_tool(function_name, function_args)
                     
                     self._write_telemetry("tool_execution", {
@@ -406,6 +420,19 @@ class ChemistryAgent:
                             tool_args = parsed_call.get("arguments")
                             
                             if tool_name:
+                                # --- DUPLICATE CALL PREVENTION (XML) ---
+                                current_call_hash = f"{tool_name}:{safe_json_dumps(tool_args, sort_keys=True)}"
+                                if current_call_hash == self.memory.last_tool_call:
+                                    print(f"[Agent Warning] Detected duplicate XML tool call: {tool_name}.")
+                                    duplicate_notice = (
+                                        f"SYSTEM NOTICE: You already executed tool '{tool_name}' with identical parameters "
+                                        "in the previous turn. Review the previous output and proceed."
+                                    )
+                                    self.memory.add_message("user", f"[SYSTEM TOOL RESPONSE]\n<tool_response>\n{{\"error\": \"{duplicate_notice}\"}}\n</tool_response>")
+                                    continue
+                                
+                                self.memory.last_tool_call = current_call_hash
+                                
                                 result = self._execute_tool(tool_name, tool_args)
                                 self._write_telemetry("tool_execution", {
                                     "iteration": iteration,

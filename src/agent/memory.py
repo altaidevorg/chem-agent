@@ -43,6 +43,7 @@ class AgentMemory:
         self.entities: Dict[str, Dict[str, Any]] = {}  # Track molecules by name/smiles
         self.active_tools: List[str] = [] # Track discovered tool names for this session
         self.summary: Optional[str] = None # Stores the condensed conversation summary
+        self.last_tool_call: Optional[str] = None # Track the last tool call hash to prevent loops
         self.metadata: Dict[str, Any] = {
             "start_time": datetime.now().isoformat(),
             "last_interaction": None

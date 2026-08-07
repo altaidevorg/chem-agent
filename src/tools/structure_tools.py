@@ -31,6 +31,7 @@ class StandardizeMoleculeTool(BaseTool):
             "type": "object",
             "properties": {
                 "smiles": {"type": "string", "description": "The raw SMILES string to validate and standardize."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."},
                 "remove_salts": {
                     "type": "boolean", 
                     "description": "Whether to remove salts and solvents (strip to parent molecule). Defaults to True.",
@@ -47,17 +48,30 @@ class StandardizeMoleculeTool(BaseTool):
                     "default": True
                 }
             },
-            "required": ["smiles"]
+            "required": []
         }
 
-    def execute(
-        self, 
-        smiles: str, 
-        remove_salts: bool = True, 
-        neutralize: bool = True, 
-        canonicalize_tautomer: bool = True,
-        **kwargs
-    ) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        smiles = kwargs.get("smiles")
+        molecule_name = kwargs.get("molecule_name")
+        remove_salts = kwargs.get("remove_salts", True)
+        neutralize = kwargs.get("neutralize", True)
+        canonicalize_tautomer = kwargs.get("canonicalize_tautomer", True)
+
+        # First, try to resolve a valid SMILES using our cross-tool helper
+        # We need to import it here or move it to a more central place.
+        # Since it's in rdkit_tools, let's do a dynamic import to avoid circular dependencies
+        try:
+            from src.tools.rdkit_tools import _resolve_smiles_or_name
+            smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+            if err:
+                return err
+            smiles = smiles_valid
+        except ImportError:
+            # Fallback if rdkit_tools isn't available for some reason
+            if not smiles:
+                return {"error": "SMILES string is required."}
+
         try:
             with rdBase.BlockLogs():
                 mol = Chem.MolFromSmiles(smiles)
@@ -177,15 +191,13 @@ class ImportAndStandardizeFileTool(BaseTool):
             "required": ["file_path"],
         }
 
-    def execute(
-        self,
-        file_path: str,
-        remove_salts: bool = True,
-        neutralize: bool = True,
-        canonicalize_tautomer: bool = True,
-        workspace: Optional[Any] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
+    def execute(self, **kwargs) -> Dict[str, Any]:
+        file_path = kwargs.get("file_path")
+        remove_salts = kwargs.get("remove_salts", True)
+        neutralize = kwargs.get("neutralize", True)
+        canonicalize_tautomer = kwargs.get("canonicalize_tautomer", True)
+        workspace = kwargs.get("workspace")
+        
         try:
             if workspace:
                 try:
@@ -204,8 +216,8 @@ class ImportAndStandardizeFileTool(BaseTool):
                 mol = Chem.MolFromMolFile(file_path)
             elif ext == ".inchi":
                 with open(file_path, "r") as f:
-                    inchi = f.read().strip()
-                mol = Chem.MolFromInchi(inchi)
+                    inchi_str = f.read().strip()
+                mol = Chem.MolFromInchi(inchi_str)
             else:
                 return {
                     "error": f"Unsupported file extension: {ext}. Supported: .mol, .sdf, .inchi"
@@ -219,7 +231,7 @@ class ImportAndStandardizeFileTool(BaseTool):
             # Convert to SMILES first to use the existing standardization pipeline
             raw_smiles = Chem.MolToSmiles(mol)
             res = std_tool.execute(
-                raw_smiles,
+                smiles=raw_smiles,
                 remove_salts=remove_salts,
                 neutralize=neutralize,
                 canonicalize_tautomer=canonicalize_tautomer,

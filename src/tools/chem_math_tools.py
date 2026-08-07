@@ -36,6 +36,7 @@ class CalculateDilutionTool(BaseTool):
                 "v2": {"type": "number", "description": "Final volume."},
                 "uv2": {"type": "string", "enum": ["L", "mL", "uL"], "description": "Unit of v2."},
                 "smiles": {"type": "string", "description": "SMILES of the solute (required for Molar conversions)."},
+                "molecule_name": {"type": "string", "description": "Optional name of the solute if SMILES is unknown."},
                 "d1": {"type": "number", "description": "Density of stock solution (g/mL)."},
                 "d2": {"type": "number", "description": "Density of final solution (g/mL)."}
             },
@@ -99,6 +100,7 @@ class CalculateDilutionTool(BaseTool):
             c2, u2 = kwargs.get("c2"), kwargs.get("u2")
             v2, uv2 = kwargs.get("v2"), kwargs.get("uv2")
             smiles = kwargs.get("smiles")
+            molecule_name = kwargs.get("molecule_name")
             d1, d2 = kwargs.get("d1"), kwargs.get("d2")
 
             if not u1 or not u2 or not uv1 or not uv2:
@@ -108,12 +110,19 @@ class CalculateDilutionTool(BaseTool):
                 }
 
             mw = None
-            if smiles:
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
-                    mw = Descriptors.MolWt(mol)
-                else:
-                    return {"status": "error", "error": f"Invalid SMILES string provided: '{smiles}'"}
+            if smiles or molecule_name:
+                try:
+                    from src.tools.rdkit_tools import _resolve_smiles_or_name
+                    smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+                    if not err:
+                        mol = Chem.MolFromSmiles(smiles_valid)
+                        if mol:
+                            mw = Descriptors.MolWt(mol)
+                except ImportError:
+                    if smiles:
+                        mol = Chem.MolFromSmiles(smiles)
+                        if mol:
+                            mw = Descriptors.MolWt(mol)
 
             params = {"c1": c1, "v1": v1, "c2": c2, "v2": v2}
             missing = [k for k, v in params.items() if v is None]
@@ -435,24 +444,34 @@ class CalculateStoichiometryTool(BaseTool):
             "type": "object",
             "properties": {
                 "smiles": {"type": "string", "description": "SMILES of the substance."},
+                "molecule_name": {"type": "string", "description": "Optional name of the molecule if SMILES is unknown."},
                 "mass": {"type": "number", "description": "Mass of the substance."},
                 "mass_unit": {"type": "string", "enum": ["g", "mg", "kg"], "default": "g"},
                 "moles": {"type": "number", "description": "Amount in moles."},
                 "moles_unit": {"type": "string", "enum": ["mol", "mmol", "umol"], "default": "mol"}
             },
-            "required": ["smiles"]
+            "required": []
         }
 
     def execute(self, **kwargs) -> Dict[str, Any]:
         try:
             smiles = kwargs.get("smiles")
+            molecule_name = kwargs.get("molecule_name")
             mass = kwargs.get("mass")
             m_unit = kwargs.get("mass_unit", "g")
             moles = kwargs.get("moles")
             n_unit = kwargs.get("moles_unit", "mol")
 
-            if not smiles:
-                return {"status": "error", "error": "Missing required 'smiles' argument."}
+            # Try to resolve valid SMILES
+            try:
+                from src.tools.rdkit_tools import _resolve_smiles_or_name
+                smiles_valid, err = _resolve_smiles_or_name(smiles, molecule_name)
+                if err:
+                    return err
+                smiles = smiles_valid
+            except ImportError:
+                if not smiles:
+                    return {"status": "error", "error": "Missing required 'smiles' or 'molecule_name' argument."}
 
             mol = Chem.MolFromSmiles(smiles)
             if not mol:
