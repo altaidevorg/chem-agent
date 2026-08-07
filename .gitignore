@@ -33,11 +33,20 @@ output/
 reports/
 !reports/.gitkeep
 
+# Data
+data/
+!data/.gitkeep
+
+# Knowledge
+knowledge/
+!knowledge/.gitkeep
+
 # Environment
 .env
 .venv
 venv/
 ENV/
+env/
 
 # IDE
 .vscode/
