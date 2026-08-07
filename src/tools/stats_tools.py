@@ -1340,7 +1340,7 @@ class AnalyzeDatasetTool(BaseTool):
         except Exception as e:
             return {"error": f"Chi-square test failed: {str(e)}"}
 
-    def execute(
+    def run(
         self,
         file_path: str,
         analysis_type: str,
@@ -1518,7 +1518,7 @@ class AnalyzeDesignOfExperimentsTool(BaseTool):
             "required": ["experiment_data", "target_column", "factors"]
         }
 
-    def execute(
+    def run(
         self, 
         experiment_data: List[Dict[str, Any]], 
         target_column: str, 
@@ -1662,7 +1662,7 @@ class PredictShelfLifeArrheniusTool(BaseTool):
             "required": ["stability_data", "failure_threshold"]
         }
 
-    def execute(
+    def run(
         self, 
         stability_data: List[Dict[str, Any]], 
         failure_threshold: float,
@@ -1854,7 +1854,7 @@ class AnalyzeDeviationTool(BaseTool):
             ],
         }
 
-    def execute(
+    def run(
         self,
         failed_batch_id: str,
         quality_file: str,
@@ -2040,7 +2040,7 @@ class AnalyzeSPCTool(BaseTool):
             "required": ["file_path", "target_column"],
         }
 
-    def execute(
+    def run(
         self,
         file_path: str,
         target_column: str,

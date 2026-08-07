@@ -1,0 +1,7 @@
+[
+  {"formula_name": "Fragrance_Concentrate_A", "components": [
+    {"name": "Linalool", "smiles": "CC(=CCCC(C)(O)C=C)C", "percentage": 45.0, "density": 0.87},
+    {"name": "Benzyl Acetate", "smiles": "CC(=O)OCC1=CC=CC=C1", "percentage": 30.0, "density": 1.05},
+    {"name": "Ethanol", "smiles": "CCO", "percentage": 25.0, "density": 0.789}
+  ]}
+]

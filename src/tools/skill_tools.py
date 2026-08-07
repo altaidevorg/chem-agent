@@ -40,7 +40,7 @@ class LoadSkillTool(BaseTool):
             }
         }
 
-    def execute(self, action: str = "load", skill_name: Optional[str] = None, detail: str = "full", **kwargs) -> Dict[str, Any]:
+    def run(self, action: str = "load", skill_name: Optional[str] = None, detail: str = "full", **kwargs) -> Dict[str, Any]:
         if action == "list":
             return {"content": self.registry.format_skill_directory()}
 
@@ -106,7 +106,7 @@ class InspectTool(BaseTool):
             "required": []
         }
 
-    def execute(self, action: str = "inspect", tool_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, action: str = "inspect", tool_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         if action == "list_all":
             all_tools = ToolRegistry.get_all_tools()
             return {
@@ -159,7 +159,7 @@ class SetWorkspaceTool(BaseTool):
             "required": ["workspace_path"]
         }
 
-    def execute(self, workspace_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, workspace_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         if not workspace:
             return {"error": "WorkspaceManager not available.", "status": "fail"}
         

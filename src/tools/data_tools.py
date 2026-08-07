@@ -51,7 +51,7 @@ class InspectDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Inspects the schema of a dataset using DuckDB."""
         # 🛡️ Flexible parameter handling: support 'file_path' or 'path'
         file_path = file_path or kwargs.get("path")
@@ -144,7 +144,7 @@ class QueryDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, sql_query: Optional[str] = None, sql: Optional[str] = None, max_results: int = 50, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, sql_query: Optional[str] = None, sql: Optional[str] = None, max_results: int = 50, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Executes a SQL query on files and returns results as dictionaries."""
         # 🛡️ Flexible parameter handling: support 'sql_query', 'sql', or 'query'
         sql_query = sql_query or sql or kwargs.get("query")
@@ -223,7 +223,7 @@ class ProfileDatasetHealthTool(BaseTool):
             "required": ["file_path"]
         }
 
-    def execute(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Performs a comprehensive data quality and health profile."""
         # 🛡️ Flexible parameter handling: support 'file_path' or 'path'
         file_path = file_path or kwargs.get("path")
@@ -331,7 +331,7 @@ class SearchColumnsTool(BaseTool):
             "required": ["pattern"]
         }
 
-    def execute(self, pattern: str, directory_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def run(self, pattern: str, directory_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Searches for columns matching a pattern across files."""
         # 🛡️ Flexible parameter handling: support 'directory_path' or 'path'
         directory_path = directory_path or kwargs.get("path") or "data"

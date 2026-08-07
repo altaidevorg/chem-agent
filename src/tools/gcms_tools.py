@@ -59,7 +59,7 @@ class CompareGCMSProfilesTool(BaseTool):
             "required": ["sample_peaks", "standard_peaks"]
         }
 
-    def execute(self, sample_peaks: List[Dict[str, Any]], standard_peaks: List[Dict[str, Any]], rt_tolerance: float = 0.05, **kwargs) -> Dict[str, Any]:
+    def run(self, sample_peaks: List[Dict[str, Any]], standard_peaks: List[Dict[str, Any]], rt_tolerance: float = 0.05, **kwargs) -> Dict[str, Any]:
         try:
             # Convert to DataFrames for easier processing
             df_sample = pd.DataFrame(sample_peaks).sort_values("rt")
