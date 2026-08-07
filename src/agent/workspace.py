@@ -24,19 +24,25 @@ class WorkspaceManager:
         """
         clean_path = str(relative_or_absolute_path).strip()
         
-        # 🛡️ Remove common redundant prefixes (e.g., "data/", "./data/")
-        # This handles cases where the model writes "data/file.csv" even if workspace is already "data/"
+        # 🛡️ Handle case where the input is exactly the root directory name (e.g., "data")
+        # or starts with the root directory name (e.g., "data/file.csv")
+        root_name = str(self.root_path.name)
+        
         prefixes_to_strip = [
-            str(self.root_path.name) + "/", 
-            "./" + str(self.root_path.name) + "/",
-            "chem-agent/" + str(self.root_path.name) + "/",
+            root_name + "/", 
+            "./" + root_name + "/",
+            "chem-agent/" + root_name + "/",
             "./",
         ]
         
-        for prefix in prefixes_to_strip:
-            if clean_path.startswith(prefix):
-                clean_path = clean_path[len(prefix):]
-                break # Only strip one level
+        # Exact match check
+        if clean_path == root_name or clean_path == "./" + root_name:
+            clean_path = "."
+        else:
+            for prefix in prefixes_to_strip:
+                if clean_path.startswith(prefix):
+                    clean_path = clean_path[len(prefix):]
+                    break # Only strip one level
 
         # Join and resolve to absolute path
         resolved = (self.root_path / clean_path).resolve()

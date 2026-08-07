@@ -51,8 +51,13 @@ class InspectDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Inspects the schema of a dataset using DuckDB."""
+        # 🛡️ Flexible parameter handling: support 'file_path' or 'path'
+        file_path = file_path or kwargs.get("path")
+        if not file_path:
+            return {"error": "Missing required argument: 'file_path' or 'path'"}
+
         if workspace:
             try:
                 real_path = workspace.resolve(file_path)
@@ -139,8 +144,13 @@ class QueryDatasetTool(BaseTool):
         """Converts a Pandas DataFrame to a JSON-serializable list of dictionaries."""
         return json.loads(df.to_json(orient='records', date_format='iso'))
 
-    def execute(self, sql_query: str, max_results: int = 50, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, sql_query: Optional[str] = None, sql: Optional[str] = None, max_results: int = 50, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Executes a SQL query on files and returns results as dictionaries."""
+        # 🛡️ Flexible parameter handling: support 'sql_query', 'sql', or 'query'
+        sql_query = sql_query or sql or kwargs.get("query")
+        if not sql_query:
+            return {"error": "Missing required argument: 'sql_query'"}
+
         # Safety Hard-Cap: Never allow more than 100 rows to context to prevent memory crashes
         effective_max = min(max_results, 100)
         
@@ -213,8 +223,12 @@ class ProfileDatasetHealthTool(BaseTool):
             "required": ["file_path"]
         }
 
-    def execute(self, file_path: str, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, file_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Performs a comprehensive data quality and health profile."""
+        # 🛡️ Flexible parameter handling: support 'file_path' or 'path'
+        file_path = file_path or kwargs.get("path")
+        if not file_path:
+            return {"error": "Missing required argument: 'file_path' or 'path'"}
         if workspace:
             try:
                 real_path = workspace.resolve(file_path)
@@ -317,8 +331,11 @@ class SearchColumnsTool(BaseTool):
             "required": ["pattern"]
         }
 
-    def execute(self, pattern: str, directory_path: str = "data", workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    def execute(self, pattern: str, directory_path: Optional[str] = None, workspace: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
         """Searches for columns matching a pattern across files."""
+        # 🛡️ Flexible parameter handling: support 'directory_path' or 'path'
+        directory_path = directory_path or kwargs.get("path") or "data"
+        
         if workspace:
             try:
                 real_path = workspace.resolve(directory_path)
@@ -329,19 +346,27 @@ class SearchColumnsTool(BaseTool):
         pattern = pattern.lower()
         matches = []
         
-        # 1. Search in current data directory if it exists
+        # 🛡️ LIVE DISK SCAN: Do not depend on SchemaCache
         if os.path.exists(directory_path):
-            for filename in os.listdir(directory_path):
-                if filename.endswith(('.csv', '.jsonl')):
-                    file_path = os.path.join(directory_path, filename)
-                    cols = SchemaCache.validate_columns(file_path, [])["available_columns"]
-                    if cols:
-                        matching_cols = [c for c in cols if pattern in c.lower()]
-                        if matching_cols:
-                            matches.append({
-                                "file": file_path,
-                                "matched_columns": matching_cols
-                            })
+            with duckdb.connect(database=':memory:') as con:
+                for filename in os.listdir(directory_path):
+                    if filename.endswith(('.csv', '.jsonl')):
+                        file_path = os.path.join(directory_path, filename)
+                        escaped_path = file_path.replace("'", "''")
+                        try:
+                            # Use DuckDB to describe the schema without loading data
+                            cols_df = con.execute(f"DESCRIBE SELECT * FROM '{escaped_path}' LIMIT 0").df()
+                            cols = cols_df["column_name"].tolist()
+                            
+                            matching_cols = [c for c in cols if pattern in c.lower()]
+                            if matching_cols:
+                                matches.append({
+                                    "file": file_path,
+                                    "matched_columns": matching_cols
+                                })
+                        except Exception:
+                            # Skip files that fail to load
+                            continue
 
         if not matches:
             return {
